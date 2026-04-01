@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Chilled Koala — Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0b0d;color:#d4dbe8;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#161b22;border:1px solid #2a3040;border-radius:12px;padding:40px;width:100%;max-width:380px;text-align:center}
+.logo{font-size:52px;margin-bottom:8px}
+h1{font-size:24px;font-weight:700;letter-spacing:-.3px;margin-bottom:4px;color:#e8eef8}
+.sub{color:#5a6478;font-size:13px;margin-bottom:32px}
+label{display:block;text-align:left;font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#5a6478;margin-bottom:6px}
+input{width:100%;background:#0d1117;border:1px solid #2a3040;border-radius:6px;color:#d4dbe8;font-size:14px;padding:11px 14px;margin-bottom:18px;outline:none;transition:border-color .15s}
+input:focus{border-color:#2d7dd2}
+.btn{width:100%;background:#1f6feb;border:none;border-radius:6px;color:#fff;font-size:14px;font-weight:700;padding:12px;cursor:pointer;transition:background .15s;margin-top:2px;letter-spacing:.2px}
+.btn:hover{background:#388bfd}
+.btn:disabled{background:#1e2330;color:#3a4455;cursor:not-allowed}
+.err{background:#1a0c0c;border:1px solid #5a1c1c;border-radius:6px;color:#f87171;font-size:12px;padding:10px 14px;margin-bottom:16px;display:none;text-align:left}
+.note{background:#0d1117;border:1px solid #2a3040;border-radius:8px;padding:14px;margin-top:24px;text-align:left}
+.note-title{font-size:11px;font-weight:700;color:#2d7dd2;margin-bottom:6px;letter-spacing:.3px}
+.note p{font-size:11px;color:#5a6478;line-height:1.6}
+footer{margin-top:24px;color:#3a4455;font-size:11px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">🐨</div>
+  <h1>Chilled Koala</h1>
+  <div class="sub">Stream Ecosystem</div>
+
+  <div class="err" id="errBox"></div>
+
+  <label for="uname">Username</label>
+  <input type="text" id="uname" placeholder="Enter your username" autocomplete="username" spellcheck="false">
+
+  <label for="pass">Password</label>
+  <input type="password" id="pass" placeholder="Enter your password" autocomplete="current-password">
+
+  <button class="btn" id="loginBtn">Log In</button>
+
+  <div class="note">
+    <div class="note-title">🔐 Authentication</div>
+    <p>Use your AzuraCast Streamer/DJ account credentials. Only registered DJs can access Chilled Koala.</p>
+  </div>
+
+  <footer>Copyright © 2026 Trajano Roberto — Released under the <a href="https://opensource.org/licenses/MIT" target="_blank" style="color:inherit;opacity:0.7;">MIT Licence</a></footer>
+</div>
+<script>
+const uname = document.getElementById('uname');
+const pass  = document.getElementById('pass');
+const btn   = document.getElementById('loginBtn');
+const err   = document.getElementById('errBox');
+
+function showErr(msg) { err.textContent = msg; err.style.display = 'block'; }
+function clearErr()   { err.style.display = 'none'; }
+
+async function login() {
+  const u = uname.value.trim(), p = pass.value;
+  if (!u || !p) { showErr('Enter username and password.'); return; }
+  clearErr();
+  btn.disabled = true; btn.textContent = 'Logging in…';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p })
+    });
+    const d = await r.json();
+    if (d.success) { window.location.href = '/'; return; }
+    showErr(d.error || 'Login failed.');
+  } catch (_) { showErr('Connection error. Is the server running?'); }
+  btn.disabled = false; btn.textContent = 'Log In';
+}
+
+btn.addEventListener('click', login);
+[uname, pass].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') login(); }));
+uname.focus();
+</script>
+</body>
+</html>

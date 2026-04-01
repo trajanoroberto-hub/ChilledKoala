@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>🐨 Chilled Koala v2.0.0</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css?v=351">
+</head>
+<body>
+
+<!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
+<header id="appHeader">
+  <div class="hd-left">
+    <span class="logo-icon">🐨</span>
+    <span class="logo-name">Chilled Koala</span>
+    <span class="logo-ver">v2.0.0</span>
+    <div class="logo-sub-wrap">
+      <span class="logo-sub">Stream Ecosystem</span>
+      <span class="logo-copy">Copyright &copy; 2026 Trajano Roberto &mdash; <a href="https://opensource.org/licenses/MIT" target="_blank" style="color:inherit;opacity:0.75;text-decoration:none;">MIT License</a></span>
+    </div>
+  </div>
+  <div class="hd-right">
+    <div id="primaryBadge" class="badge badge-observer">Primary: –</div>
+    <div id="streamBadge"  class="badge badge-off">● OFFLINE</div>
+    <div id="clockDisplay" class="clock">00:00:00</div>
+    <span id="userDisplay" class="user-tag">–</span>
+    <button id="logoutBtn" class="btn-logout">Logout</button>
+  </div>
+</header>
+
+<!-- ═══ TABS ═════════════════════════════════════════════════════════════════ -->
+<nav id="tabBar">
+  <button class="tab active" data-tab="rt">📻 RT</button>
+  <button class="tab"        data-tab="ra">🎵 RA</button>
+  <button class="tab"        data-tab="playlist">📋 Playlist</button>
+  <button class="tab"        data-tab="settings">⚙ Settings</button>
+</nav>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     RT — RADIO TABLE
+══════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-rt" class="tab-panel active">
+
+  <!-- Stream control bar -->
+  <div id="streamBar">
+    <!-- Left: status cells in a 2-row grid -->
+    <div class="sb-status">
+      <div class="sb-cell">
+        <div class="sb-cell-lbl">ICECAST</div>
+        <div class="sb-cell-val" id="icecastInfo">–</div>
+      </div>
+      <div class="sb-divider"></div>
+      <div class="sb-cell">
+        <div class="sb-cell-lbl">ENCODER</div>
+        <div class="sb-cell-val" id="encoderStatus">idle</div>
+      </div>
+      <div class="sb-divider"></div>
+      <div class="sb-cell">
+        <div class="sb-cell-lbl">LIBRARY</div>
+        <div class="sb-cell-val" id="libStatus">–</div>
+      </div>
+    </div>
+    <!-- Centre: GO LIVE -->
+    <div class="sb-center">
+      <button id="goLiveBtn" class="btn-golive">▶ GO LIVE</button>
+    </div>
+
+  </div>
+
+  <!-- RA Player audio elements (two for crossfade) -->
+  <!-- Audio elements removed: RA playback is now server-side -->
+
+  <!-- Now Playing metadata bar — full fields -->
+  <div id="metaBar" class="meta-bar hidden">
+    <div class="meta-bar-fields">
+      <div class="meta-bar-field">
+        <span class="meta-bar-lbl">START</span>
+        <span class="meta-bar-val" id="mbStart">–</span>
+      </div>
+      <div class="meta-bar-divider"></div>
+      <div class="meta-bar-field meta-bar-title-field">
+        <span class="meta-bar-lbl">TITLE</span>
+        <span class="meta-bar-val meta-bar-bright" id="mbTitle">–</span>
+      </div>
+      <div class="meta-bar-divider"></div>
+      <div class="meta-bar-field">
+        <span class="meta-bar-lbl">ARTIST</span>
+        <span class="meta-bar-val meta-bar-cyan" id="mbArtist">–</span>
+      </div>
+      <div class="meta-bar-divider"></div>
+      <div class="meta-bar-field">
+        <span class="meta-bar-lbl">ALBUM</span>
+        <span class="meta-bar-val" id="mbAlbum">–</span>
+      </div>
+      <div class="meta-bar-divider"></div>
+      <div class="meta-bar-field">
+        <span class="meta-bar-lbl">DATE</span>
+        <span class="meta-bar-val" id="mbYear">–</span>
+      </div>
+      <div class="meta-bar-divider"></div>
+      <div class="meta-bar-field">
+        <span class="meta-bar-lbl">ORIG DATE</span>
+        <span class="meta-bar-val" id="mbOrigDate">–</span>
+      </div>
+      <div class="meta-bar-divider"></div>
+      <div class="meta-bar-field">
+        <span class="meta-bar-lbl">GENRE</span>
+        <span class="meta-bar-val" id="mbGenre">–</span>
+      </div>
+      <div class="meta-bar-divider"></div>
+      <div class="meta-bar-field">
+        <span class="meta-bar-lbl">DUR</span>
+        <span class="meta-bar-val" id="mbDur">–</span>
+      </div>
+
+    </div>
+    <!-- RT progress row: ON AIR label + elapsed/bar/remaining + connected -->
+    <div id="rtProgressRow" class="rt-progress-row hidden">
+      <span class="rt-onair-label" id="rtOnAirLabel">ON AIR</span>
+      <div class="rt-now-time">
+        <span id="rtTimeElapsed" class="ra-time-el">0:00</span>
+        <div id="rtProgressBar" class="ra-progress">
+          <div id="rtProgressFill"  class="ra-progress-fill"></div>
+          <div id="rtProgressHead"  class="ra-progress-head"></div>
+        </div>
+        <span id="rtTimeRemain" class="ra-time-re">-0:00</span>
+      </div>
+      <!-- Connected users — sits in the on-air bar, right side -->
+      <div class="rt-connected">
+        <div id="connectedUsers" class="connected-users-inline"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Observer notice -->
+  <div id="primaryMsg" class="primary-msg hidden"></div>
+
+  <!-- Resize handle — drag to resize console height -->
+  <div id="consoleResizeHandle" title="Drag to resize console"></div>
+
+  <!-- Console: Two Radio Tables — RT1 (station) and RT2 (broadcast) -->
+  <div id="consoleWrap">
+
+    <!-- ── RT 1 — Station Mix ─────────────────────────────────────────────── -->
+    <div id="rtTablesAndMaster">
+
+      <div id="rtTables">
+
+        <div class="rt-table" id="rt1">
+          <div class="rt-table-hdr">
+            <span class="rt-table-label">RT 1</span>
+            <span class="rt-table-desc">STATION MIX</span>
+          </div>
+          <!-- channels + PGM VU side by side -->
+          <div class="rt-body">
+            <div class="rt-channel-row" id="rt1Channels">
+              <!-- CH1–CH6 + PGM1 VU injected by app.js -->
+            </div>
+          </div>
+        </div>
+
+        <!-- divider -->
+        <div class="rt-table-divider"></div>
+
+        <!-- ── RT 2 — Broadcast Mix ─────────────────────────────────────── -->
+        <div class="rt-table" id="rt2">
+          <div class="rt-table-hdr">
+            <span class="rt-table-label">RT 2</span>
+            <span class="rt-table-desc">BROADCAST MIX</span>
+          </div>
+          <div class="rt-body">
+            <div class="rt-channel-row" id="rt2Channels">
+              <!-- CH7–CH8 + PGM1 input strip + PGM2 VU injected by app.js -->
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /rtTables -->
+
+      <!-- MON — Monitor section: same structure as RT 1 / RT 2 -->
+      <div class="rt-table-divider"></div>
+      <div class="rt-table" id="pgm1Section">
+        <div class="rt-table-hdr">
+          <span class="rt-table-label">MON</span>
+        </div>
+        <div class="rt-body">
+          <div class="rt-channel-row" id="monitorStrip">
+            <!-- MON ch-strip injected by app.js buildMonitorStrip() -->
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /rtTablesAndMaster -->
+
+  </div><!-- /consoleWrap -->
+
+</div><!-- /tab-rt -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     RA — RADIO AUTOMATION
+══════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-ra" class="tab-panel hidden">
+
+  <!-- Player 1 / Player 2 sub-tabs -->
+  <div id="raPlayerTabs">
+    <button class="ra-player-tab active" data-player="a">▶ Player 1</button>
+    <button class="ra-player-tab"        data-player="b">▶ Player 2</button>
+  </div>
+
+  <div id="raLayout">
+
+    <!-- LEFT: Live Playlist -->
+    <div id="raLeft">
+      <!-- RA Transport Bar -->
+      <div class="ra-transport">
+
+        <!-- Now On Air display -->
+        <div class="ra-now">
+          <div class="ra-now-label">ON AIR</div>
+          <div class="ra-now-info">
+            <div id="raNowTitle"  class="ra-now-title">–</div>
+            <div id="raNowArtist" class="ra-now-artist">–</div>
+          </div>
+          <div class="ra-now-time">
+            <span id="raTimeElapsed" class="ra-time-el">0:00</span>
+            <div id="raProgressBar" class="ra-progress">
+              <div id="raProgressFill" class="ra-progress-fill"></div>
+              <div id="raProgressHead" class="ra-progress-head"></div>
+            </div>
+            <span id="raTimeRemain" class="ra-time-re">-0:00</span>
+          </div>
+        </div>
+
+        <!-- Transport buttons — RadioBOSS style -->
+        <div class="ra-controls">
+          <button id="raBtnPrev"  class="ra-btn" title="Previous track">⏮</button>
+          <button id="raBtnPlay"  class="ra-btn ra-btn-play" title="Play / Pause">▶</button>
+          <button id="raBtnStop"  class="ra-btn" title="Stop">⏹</button>
+          <button id="raBtnNext"  class="ra-btn" title="Next track">⏭</button>
+          <button id="raBtnBreak" class="ra-btn ra-btn-break" title="Stop after current track">⏹|</button>
+        </div>
+
+        <!-- Crossfade & playlist controls -->
+        <div class="ra-cfg">
+          <label class="ra-cfg-lbl">XF</label>
+          <input type="number" id="raCrossfade" class="ra-cfg-in" value="2" min="0" max="30" step="0.5" title="Crossfade (seconds)">
+          <label class="ra-cfg-lbl">s</label>
+          <button id="clearPlaylistBtn" class="btn-danger-sm" style="margin-left:10px">✕ Clear</button>
+        </div>
+
+      </div>
+
+      <div id="playlistWrap">
+        <table id="playlistTable">
+          <thead>
+            <tr>
+              <th class="col-num">#</th>
+              <th class="col-state">STATE</th>
+              <th class="col-track">ARTIST – TITLE</th>
+              <th class="col-dur">Dur.</th>
+              <th class="col-del" title="Delete">✕</th>
+              <th class="col-stop" title="Stop after this track">⏹|</th>
+            </tr>
+          </thead>
+          <tbody id="playlistBody">
+            <tr><td colspan="6" class="pl-empty">Playlist empty — add tracks from the library →</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Track metadata panel -->
+      <div id="trackMetaPanel" class="track-meta-panel hidden">
+        <div class="tmp-header">
+          <span class="tmp-icon">♪</span>
+          <span class="tmp-title" id="tmpTrackTitle">–</span>
+          <span class="tmp-badge" id="tmpStatus"></span>
+        </div>
+        <div class="tmp-body">
+
+          <!-- Column 1: Track identification -->
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">TRACK</div>
+            <div class="tmp-row"><span class="tmp-lbl">Title</span>        <span class="tmp-val tmp-bright"  id="tmpTitle">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Artist</span>       <span class="tmp-val tmp-cyan"    id="tmpArtist">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Album Artist</span> <span class="tmp-val"             id="tmpAlbumArtist">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Album</span>        <span class="tmp-val"             id="tmpAlbum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Genre</span>        <span class="tmp-val"             id="tmpGenre">–</span></div>
+          </div>
+
+          <!-- Column 2: Numbering & dates -->
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">NUMBERING</div>
+            <div class="tmp-row"><span class="tmp-lbl">Track №</span>      <span class="tmp-val"             id="tmpTrackNum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Disc №</span>       <span class="tmp-val"             id="tmpDiscNum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Date</span>         <span class="tmp-val"             id="tmpDate">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Original Date</span><span class="tmp-val"             id="tmpOrigDate">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Duration</span>     <span class="tmp-val tmp-amber"   id="tmpDuration">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">LUFS</span>         <span class="tmp-val tmp-amber"   id="tmpLufs">–</span></div>
+          </div>
+
+          <!-- Column 3: Gato Preto IDs -->
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">GATO PRETO</div>
+            <div class="tmp-row"><span class="tmp-lbl">Album ID</span>     <span class="tmp-val tmp-id"      id="tmpAlbumId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Track ID</span>     <span class="tmp-val tmp-id"      id="tmpTrackId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Artist ID</span>    <span class="tmp-val tmp-id"      id="tmpArtistId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Status</span>       <span class="tmp-val"             id="tmpGpStatus">–</span></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- PLAYER 2 transport — hidden by default, shown when Player 2 tab active -->
+    <div id="raLeftB" class="ra-player-panel hidden">
+      <div class="ra-transport">
+
+        <div class="ra-now">
+          <div class="ra-now-label">ON AIR</div>
+          <div class="ra-now-info">
+            <div id="rbNowTitle"  class="ra-now-title">–</div>
+            <div id="rbNowArtist" class="ra-now-artist">–</div>
+          </div>
+          <div class="ra-now-time">
+            <span id="rbTimeElapsed" class="ra-time-el">0:00</span>
+            <div id="rbProgressBar" class="ra-progress">
+              <div id="rbProgressFill" class="ra-progress-fill"></div>
+              <div id="rbProgressHead" class="ra-progress-head"></div>
+            </div>
+            <span id="rbTimeRemain" class="ra-time-re">-0:00</span>
+          </div>
+        </div>
+
+        <div class="ra-controls">
+          <button id="rbBtnPrev"  class="ra-btn" title="Previous track">⏮</button>
+          <button id="rbBtnPlay"  class="ra-btn ra-btn-play" title="Play / Pause">▶</button>
+          <button id="rbBtnStop"  class="ra-btn" title="Stop">⏹</button>
+          <button id="rbBtnNext"  class="ra-btn" title="Next track">⏭</button>
+          <button id="rbBtnBreak" class="ra-btn ra-btn-break" title="Stop after current track">⏹|</button>
+        </div>
+
+        <div class="ra-cfg">
+          <label class="ra-cfg-lbl">XF</label>
+          <input type="number" id="rbCrossfade" class="ra-cfg-in" value="2" min="0" max="30" step="0.5" title="Crossfade (seconds)">
+          <label class="ra-cfg-lbl">s</label>
+          <button id="clearPlaylistBBtn" class="btn-danger-sm" style="margin-left:10px">✕ Clear</button>
+        </div>
+
+      </div>
+
+      <div id="playlistBWrap">
+        <table id="playlistBTable">
+          <thead>
+            <tr>
+              <th class="col-num">#</th>
+              <th class="col-state">STATE</th>
+              <th class="col-track">ARTIST – TITLE</th>
+              <th class="col-dur">Dur.</th>
+              <th class="col-del" title="Delete">✕</th>
+              <th class="col-stop" title="Stop after this track">⏹|</th>
+            </tr>
+          </thead>
+          <tbody id="playlistBBody">
+            <tr><td colspan="6" class="pl-empty">Player 2 playlist empty — add tracks from the library →</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Track metadata panel — identical to Player 1 -->
+      <div id="trackMetaPanelB" class="track-meta-panel hidden">
+        <div class="tmp-header">
+          <span class="tmp-icon">♪</span>
+          <span class="tmp-title" id="tmpBTrackTitle">–</span>
+          <span class="tmp-badge" id="tmpBStatus"></span>
+        </div>
+        <div class="tmp-body">
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">TRACK</div>
+            <div class="tmp-row"><span class="tmp-lbl">Title</span>        <span class="tmp-val tmp-bright"  id="tmpBTitle">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Artist</span>       <span class="tmp-val tmp-cyan"    id="tmpBArtist">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Album Artist</span> <span class="tmp-val"             id="tmpBAlbumArtist">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Album</span>        <span class="tmp-val"             id="tmpBAlbum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Genre</span>        <span class="tmp-val"             id="tmpBGenre">–</span></div>
+          </div>
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">NUMBERING</div>
+            <div class="tmp-row"><span class="tmp-lbl">Track №</span>      <span class="tmp-val"             id="tmpBTrackNum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Disc №</span>       <span class="tmp-val"             id="tmpBDiscNum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Date</span>         <span class="tmp-val"             id="tmpBDate">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Original Date</span><span class="tmp-val"             id="tmpBOrigDate">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Duration</span>     <span class="tmp-val tmp-amber"   id="tmpBDuration">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">LUFS</span>         <span class="tmp-val tmp-amber"   id="tmpBLufs">–</span></div>
+          </div>
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">GATO PRETO</div>
+            <div class="tmp-row"><span class="tmp-lbl">Album ID</span>     <span class="tmp-val tmp-id"      id="tmpBAlbumId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Track ID</span>     <span class="tmp-val tmp-id"      id="tmpBTrackId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Artist ID</span>    <span class="tmp-val tmp-id"      id="tmpBArtistId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Status</span>       <span class="tmp-val"             id="tmpBGpStatus">–</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Track Selection (shared by both players) -->
+    <div id="raRight">
+      <div class="sel-tabs">
+        <button class="sel-tab active" data-sel="library">Music Library</button>
+        <button class="sel-tab"        data-sel="sweeper">Sweeper</button>
+        <button class="sel-tab"        data-sel="bumper">Bumper</button>
+        <button class="sel-tab"        data-sel="trailer">Trailer</button>
+        <button class="sel-tab"        data-sel="sfx">SFX</button>
+      </div>
+
+      <div id="selPanel-library" class="sel-panel active">
+        <div class="lib-search-bar">
+          <input type="text" id="libSearch" class="lib-search-in" placeholder="Search…" autocomplete="off" spellcheck="false">
+          <select id="libField" class="lib-field-sel">
+            <option value="all">ALL FIELDS</option>
+            <option value="title" selected>TITLE</option>
+            <option value="artist">ARTIST</option>
+            <option value="album">ALBUM</option>
+            <option value="albumartist">ALBUMARTIST</option>
+            <option value="date">DATE / YEAR</option>
+            <option value="genre">GENRE</option>
+          </select>
+        </div>
+        <div id="libResultCount" class="lib-result-count"></div>
+        <div id="libResults" class="lib-results">
+          <div class="lib-empty" id="libHint">Type to search the music library…</div>
+        </div>
+      </div>
+
+      <div id="selPanel-sweeper" class="sel-panel hidden"><div id="cartSweeper" class="cart-list"></div></div>
+      <div id="selPanel-bumper"  class="sel-panel hidden"><div id="cartBumper"  class="cart-list"></div></div>
+      <div id="selPanel-trailer" class="sel-panel hidden"><div id="cartTrailer" class="cart-list"></div></div>
+      <div id="selPanel-sfx"     class="sel-panel hidden"><div id="cartSFX"     class="cart-list"></div></div>
+    </div>
+
+  </div>
+</div><!-- /tab-ra -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     PLAYLIST BUILDER
+══════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-playlist" class="tab-panel hidden">
+  <div id="pbLayout">
+
+    <!-- LEFT: Tree browser -->
+    <div id="pbLeft">
+      <div class="pb-toolbar">
+        <span class="pb-toolbar-title">🎵 Music Library</span>
+        <button id="pbRefreshBtn" class="btn-secondary pb-toolbar-btn" title="Reload tree from library">↺ Refresh</button>
+      </div>
+      <div id="pbStatus" class="pb-status"></div>
+      <div id="pbTree" class="pb-tree"></div>
+    </div>
+
+    <!-- RIGHT: Built playlist -->
+    <div id="pbRight">
+      <div class="pb-toolbar">
+        <span class="pb-toolbar-title">📋 Playlist</span>
+        <span id="pbTotal" class="pb-total"></span>
+        <button id="pbClearBtn"  class="btn-danger-sm  pb-toolbar-btn">✕ Clear</button>
+        <button id="pbExportBtn" class="btn-secondary   pb-toolbar-btn">⬇ M3U</button>
+        <button id="pbPushBtn"   class="btn-primary     pb-toolbar-btn">📡 Push to AzuraCast</button>
+      </div>
+      <div id="pbPushPanel" class="pb-push-panel hidden">
+        <label class="pb-push-label">AzuraCast playlist:</label>
+        <select id="pbPushSelect" class="pb-push-select"></select>
+        <button id="pbPushConfirmBtn" class="btn-primary pb-push-go">✓ Push</button>
+        <button id="pbPushCancelBtn"  class="btn-secondary pb-push-cancel">✕</button>
+        <span id="pbPushStatus" class="pb-push-status"></span>
+      </div>
+      <div id="pbPlaylistWrap">
+        <table id="pbPlaylistTable">
+          <thead>
+            <tr>
+              <th class="pb-pl-num">#</th>
+              <th class="pb-pl-drag"></th>
+              <th class="pb-pl-title">ARTIST – TITLE</th>
+              <th class="pb-pl-dur">DUR.</th>
+              <th class="pb-pl-del">✕</th>
+            </tr>
+          </thead>
+          <tbody id="pbPlaylistBody">
+            <tr><td colspan="5" class="pb-pl-empty">Playlist empty — add tracks or folders from the tree ←</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /tab-playlist -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     SETTINGS
+══════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-settings" class="tab-panel hidden">
+  <div id="settingsLayout">
+    <div class="settings-body">
+
+      <!-- Guest Call Link -->
+      <div class="settings-section">
+        <div class="settings-hdr">📞 Guest Call Link</div>
+        <div class="settings-hint" style="margin-bottom:10px">
+          Share this link with a guest caller. They open it in any modern browser,
+          grant microphone permission, and connect directly to the studio.
+          No account or install required. Guest appears on <strong>CH 5 (Guest 1)</strong>
+          or <strong>CH 6 (Guest 2)</strong> in the RT console.
+        </div>
+        <div class="settings-row" style="gap:8px;align-items:center">
+          <input id="guestCallUrl" type="text" class="settings-in"
+                 style="flex:1;font-family:monospace;font-size:12px;cursor:text"
+                 readonly>
+          <button id="guestCallCopy" class="btn-secondary" style="white-space:nowrap">📋 Copy Link</button>
+          <a id="guestCallOpen" href="#" target="_blank" class="btn-secondary"
+             style="white-space:nowrap;text-decoration:none">🔗 Open</a>
+        </div>
+        <div class="settings-hint" style="margin-top:6px">
+          <em>Tip: Send via WhatsApp, email, or any messenger. Each guest needs their own browser tab.</em>
+        </div>
+      </div>
+
+      <!-- Music Library -->
+      <div class="settings-section">
+        <div class="settings-hdr">🎵 Music Library</div>
+        <div class="settings-row">
+          <label class="settings-lbl">Path on VPS</label>
+          <input type="text" id="settingsMusicPath" class="settings-in" placeholder="/mnt/data/media/Music" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="settings-hint">
+          Full filesystem path to the music directory on the VPS.<br>
+          On startup, Chilled Koala loads metadata from <code>.library-cache.json</code> — instant, no filesystem scan.<br>
+          The cache is invalidated automatically when the app version changes (schema version mismatch) or the library path changes.<br>
+          Run <strong>Rescan &amp; Rebuild Cache</strong> after adding, removing, or re-tagging FLAC files.
+        </div>
+        <div class="settings-row">
+          <button id="settingsReindexBtn" class="btn-secondary">↺ Rescan &amp; Rebuild Cache</button>
+          <span id="settingsReindexStatus" class="settings-reindex-status"></span>
+        </div>
+      </div>
+
+      <!-- GO LIVE — AzuraCast DJ Connection -->
+      <div class="settings-section">
+        <div class="settings-hdr">🔴 GO LIVE — AzuraCast DJ Connection</div>
+        <div class="settings-hint" style="margin-bottom:10px">
+          Chilled Koala connects here when you press GO LIVE. This goes to Liquidsoap (not Icecast directly),
+          which is what allows it to override AutoDJ.<br>
+          <strong>AzuraCast → Your Station → Live Streaming → Streamers/DJs → Connection Information</strong>
+        </div>
+        <div class="settings-row">
+          <label class="settings-lbl">Server</label>
+          <input type="text" id="settingsDJServer" class="settings-in settings-short" placeholder="191.96.224.113" autocomplete="off">
+        </div>
+        <div class="settings-row">
+          <label class="settings-lbl">Port</label>
+          <input type="number" id="settingsDJPort" class="settings-in settings-short" placeholder="8005" min="1" max="65535">
+        </div>
+        <div class="settings-row">
+          <label class="settings-lbl">Mount</label>
+          <input type="text" id="settingsDJMount" class="settings-in settings-short" placeholder="/" autocomplete="off">
+        </div>
+        <div class="settings-hint">
+          Credentials (username &amp; password) are entered each time you press GO LIVE — they are your AzuraCast DJ account credentials, same as your Chilled Koala login.
+        </div>
+      </div>
+
+      <!-- Icecast — Listener Output & Metadata -->
+      <div class="settings-section">
+        <div class="settings-hdr">📡 Icecast — Listener Output &amp; Metadata</div>
+        <div class="settings-hint" style="margin-bottom:10px">
+          This is where listeners connect and where track metadata is sent. Not used for GO LIVE.
+        </div>
+        <div class="settings-row">
+          <label class="settings-lbl">Server</label>
+          <input type="text" id="settingsIcecastServer" class="settings-in settings-short" placeholder="localhost" autocomplete="off">
+        </div>
+        <div class="settings-row">
+          <label class="settings-lbl">Port</label>
+          <input type="number" id="settingsIcecastPort" class="settings-in settings-short" placeholder="8000" min="1" max="65535">
+        </div>
+        <div class="settings-row">
+          <label class="settings-lbl">Mount point</label>
+          <input type="text" id="settingsIcecastMount" class="settings-in settings-short" placeholder="/live" autocomplete="off">
+        </div>
+        <div class="settings-row">
+          <label class="settings-lbl">Source password</label>
+          <input type="password" id="settingsIcecastPassword" class="settings-in settings-short" placeholder="leave blank to keep current">
+        </div>
+        <div class="settings-hint">All values are saved to config.ini on the server.</div>
+      </div>
+
+      <!-- Clock Synchronisation -->
+      <div class="settings-section">
+        <div class="settings-hdr">🕐 Clock Synchronisation</div>
+        <div class="settings-hint" style="margin-bottom:10px">
+          The track timer accuracy depends on both VPS and PC being synchronised to NTP.
+          If NTP is not active on the VPS, the timer can drift by several seconds.
+          PC browser time is set by your operating system — ensure it is also NTP-synced.
+        </div>
+        <div class="settings-row">
+          <button id="settingsClockCheckBtn" class="btn-secondary">🔄 Check Clock Sync</button>
+          <span id="settingsClockStatus" class="settings-reindex-status"></span>
+        </div>
+        <div id="settingsClockDetail" class="settings-hint" style="display:none;margin-top:6px;font-family:monospace;font-size:11px;line-height:1.7"></div>
+        <div class="settings-hint" style="margin-top:8px">
+          To enable NTP on VPS if not synced:<br>
+          <code>timedatectl set-ntp true &amp;&amp; systemctl restart systemd-timesyncd</code>
+        </div>
+      </div>
+
+      <!-- DJ Mic Delay Compensation -->
+      <div class="settings-section">
+        <div class="settings-hdr">🎙 DJ Mic Delay Compensation (Loc Mic 1 &amp; 2)</div>
+        <div class="settings-hint" style="margin-bottom:10px">
+          The DJ hears PGM1 through earphones with a delay of <strong>network latency + 700ms jitter buffer</strong>.
+          They speak to what they hear, so their voice arrives at the server early relative to the music.<br>
+          Setting this delay aligns DJ voice with music in the Icecast broadcast output.<br>
+          <strong>Auto-Detect</strong> calculates the value from the measured network RTT. Click Apply to save.
+        </div>
+        <div class="settings-row" style="align-items:center;gap:12px">
+          <label class="settings-lbl">Delay</label>
+          <input type="range" id="micDelaySlider" min="0" max="2000" step="10" value="0" style="flex:1;min-width:120px;max-width:320px">
+          <span id="micDelayDisplay" style="font-family:monospace;font-weight:600;min-width:52px;color:var(--cyan2)">0ms</span>
+          <button id="micDelayApply"   class="btn-primary"   style="white-space:nowrap">✓ Apply</button>
+          <button id="micDelayAutoBtn" class="btn-secondary" style="white-space:nowrap">⚡ Auto-Detect</button>
+        </div>
+        <div id="micDelayAutoHint" class="settings-hint" style="margin-top:6px;font-family:monospace;font-size:11px;color:var(--text2)">
+          RTT not yet measured — open Settings after login completes.
+        </div>
+        <div class="settings-hint" style="margin-top:6px">
+          Start with <strong>Auto-Detect</strong>, then fine-tune: increase if voice sounds early in the broadcast, decrease if late.<br>
+          0ms = compensation off. Value is saved to config.ini and restored on restart.
+        </div>
+      </div>
+
+      <!-- Mic Diagnostic -->
+      <div class="settings-section">
+        <div class="settings-hdr">🎙 Mic Diagnostic</div>        <div class="settings-hint">
+          Shows real-time status of all mic channels: session registered, decoder live,
+          bytes buffered, gain and last RMS. Use this if Loc Mic 1/2 VU bars are dark.
+        </div>
+        <div class="settings-row">
+          <button id="settingsMicDiagBtn" class="btn-secondary">🔍 Run Mic Diagnostic</button>
+          <button id="settingsMicLevelBtn" class="btn-secondary" style="margin-left:8px">🎚 Live Mic Level</button>
+        </div>
+        <pre id="settingsMicDiagOut" style="display:none;margin-top:8px;font-size:11px;font-family:monospace;background:var(--bg3);border:1px solid var(--bdr2);padding:10px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;color:var(--cyan2);line-height:1.6"></pre>
+        <!-- Live mic level monitor -->
+        <div id="settingsMicLevelPanel" style="display:none;margin-top:10px;padding:12px;background:var(--bg3);border:1px solid var(--bdr2);border-radius:6px;font-family:monospace;font-size:12px;color:var(--text1)">
+          <div style="margin-bottom:6px;color:var(--cyan2);font-weight:bold">🎚 Live Mic Input Level — speak now</div>
+          <div style="margin-bottom:4px">
+            <span style="color:var(--text2)">RMS level: </span>
+            <span id="micLevelRMS" style="color:var(--green2);font-size:14px;font-weight:bold">—</span>
+            <span style="color:var(--text2);margin-left:12px">dB: </span>
+            <span id="micLevelDB" style="color:var(--green2);font-size:14px;font-weight:bold">—</span>
+          </div>
+          <div style="margin-bottom:8px">
+            <span style="color:var(--text2)">Peak: </span>
+            <span id="micLevelPeak" style="color:var(--cyan2)">—</span>
+            <span style="color:var(--text2);margin-left:12px">Device: </span>
+            <span id="micLevelDevice" style="color:var(--text2);font-size:10px">—</span>
+          </div>
+          <!-- Visual bar -->
+          <div style="background:var(--bg1);border-radius:3px;height:20px;width:100%;position:relative;overflow:hidden;border:1px solid var(--bdr2)">
+            <div id="micLevelBar" style="height:100%;width:0%;background:var(--green2);transition:width 0.08s;border-radius:3px"></div>
+            <!-- Zone markers -->
+            <div style="position:absolute;top:0;left:10%;height:100%;width:1px;background:rgba(255,255,255,0.1)"></div>
+            <div style="position:absolute;top:0;left:30%;height:100%;width:1px;background:rgba(255,255,255,0.1)"></div>
+            <div style="position:absolute;top:0;left:60%;height:100%;width:1px;background:rgba(255,255,255,0.1)"></div>
+            <div style="position:absolute;top:0;left:80%;height:100%;width:1px;background:rgba(255,255,255,0.2)"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);margin-top:2px">
+            <span>−60dB</span><span>−40dB</span><span>−20dB</span><span>−10dB</span><span>0dB</span>
+          </div>
+          <div id="micLevelHint" style="margin-top:8px;font-size:11px;color:var(--text2)">Waiting for signal…</div>
+          <button id="settingsMicLevelStop" class="btn-secondary" style="margin-top:8px;font-size:11px">⏹ Stop Monitor</button>
+        </div>
+      </div>
+
+      <!-- Channels -->
+      <div class="settings-section">
+        <div class="settings-hdr">🎚 Channels</div>
+        <div class="settings-ch-grid">
+          <div class="settings-ch-head">
+            <span>CH</span>
+            <span>Label (Name)</span>
+            <span>Address (ALSA Device)</span>
+          </div>
+          <div id="settingsChRows">
+            <!-- Rows injected by app.js -->
+          </div>
+        </div>
+        <div class="settings-hint">
+          Label is the name shown on the fader strip.<br>
+          Address is the ALSA device string (e.g. default, hw:1,0) or leave blank.
+        </div>
+      </div>
+
+      <!-- Save -->
+      <div class="settings-actions-main">
+        <button id="settingsSaveBtn" class="btn-primary">💾 Save Settings</button>
+        <span class="settings-note">Only the primary DJ can save settings. Changes take effect immediately.</span>
+      </div>
+
+    </div>
+  </div>
+</div><!-- /tab-settings -->
+
+
+<!-- Channel Config Modal -->
+<!-- GO LIVE Credential Modal -->
+<div id="goLiveModal" class="modal hidden">
+  <div class="modal-box modal-box-sm">
+    <div class="modal-hdr">
+      <span>🔴 GO LIVE — AzuraCast DJ Login</span>
+      <button class="modal-x" id="goLiveModalClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="golive-info">
+        Connecting to Liquidsoap at <span id="goLiveDJServer"></span>
+        — same credentials as your Chilled Koala login.
+      </div>
+      <div class="cfg-row">
+        <label>DJ Username</label>
+        <input type="text" id="goLiveUser" class="cfg-in" autocomplete="username" spellcheck="false">
+      </div>
+      <div class="cfg-row">
+        <label>DJ Password</label>
+        <input type="password" id="goLivePass" class="cfg-in" autocomplete="current-password">
+      </div>
+      <div id="goLiveError" class="golive-error hidden"></div>
+      <div class="cfg-actions">
+        <button id="goLiveConfirm" class="btn-primary">▶ Go Live</button>
+        <button id="goLiveCancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="chConfigModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span id="chConfigTitle">Configure Channel</span>
+      <button class="modal-x" id="chConfigClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="cfg-row">
+        <label>Channel Name</label>
+        <input type="text" id="cfgName" class="cfg-in" placeholder="e.g. Main Mic" maxlength="20">
+      </div>
+      <div class="cfg-row">
+        <label>Type</label>
+        <select id="cfgType" class="cfg-in">
+          <option value="mic">Microphone</option>
+          <option value="player">Player</option>
+          <option value="remote">Remote DJ</option>
+          <option value="guest">Guest</option>
+          <option value="whatsapp">WhatsApp</option>
+          <option value="line">Line In</option>
+          <option value="none">None / Unassigned</option>
+        </select>
+      </div>
+      <div class="cfg-sep"></div>
+      <div class="cfg-row">
+        <label>Source A — Label</label>
+        <input type="text" id="cfgLabelA" class="cfg-in cfg-short" placeholder="MIC" maxlength="8">
+        <label class="cfg-lbl2">ALSA Device</label>
+        <input type="text" id="cfgSrcA"   class="cfg-in cfg-long"  placeholder="default">
+      </div>
+      <div class="cfg-row">
+        <label>Source B — Label</label>
+        <input type="text" id="cfgLabelB" class="cfg-in cfg-short" placeholder="LINE" maxlength="8">
+        <label class="cfg-lbl2">ALSA Device</label>
+        <input type="text" id="cfgSrcB"   class="cfg-in cfg-long"  placeholder="(leave blank to disable)">
+      </div>
+      <div class="cfg-actions">
+        <button id="cfgSave"   class="btn-primary">Save</button>
+        <button id="cfgCancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/pcm-player.js"></script>
+<script src="/app.js?v=351"></script>
+</body>
+</html>

@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gato Preto Radio — Join Live</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:    #0d1117; --bg2: #161b22; --bdr: #30363d;
+    --green: #22c55e; --red: #f87171; --amber: #f59e0b;
+    --text:  #e6edf3; --text2: #8b949e; --text3: #484f58;
+    --mono: 'Courier New', monospace;
+  }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: var(--bg2); border: 1px solid var(--bdr);
+    border-radius: 12px; padding: 40px 36px; width: 100%; max-width: 420px;
+    text-align: center;
+  }
+  .logo { font-size: 36px; margin-bottom: 8px; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .sub { color: var(--text2); font-size: 14px; margin-bottom: 32px; }
+  label { display: block; text-align: left; font-size: 13px; color: var(--text2); margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 10px 14px; background: var(--bg);
+    border: 1px solid var(--bdr); border-radius: 8px; color: var(--text);
+    font-size: 15px; margin-bottom: 20px; outline: none;
+  }
+  input:focus { border-color: #4f8ef7; }
+  .btn {
+    width: 100%; padding: 12px; border-radius: 8px; border: none;
+    font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity .15s;
+  }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn-connect { background: var(--green); color: #000; }
+  .btn-disconnect { background: var(--red); color: #000; display: none; }
+  .status {
+    margin-top: 24px; padding: 12px 16px; border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--bdr);
+    font-size: 13px; font-family: var(--mono); color: var(--text2);
+    min-height: 48px; text-align: left;
+  }
+  .dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; margin-right: 6px; background: var(--text3);
+  }
+  .dot.live { background: var(--red); animation: pulse 1s infinite; }
+  .dot.connecting { background: var(--amber); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .level-wrap { margin-top: 16px; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+  .level-bar  { height: 100%; width: 0%; background: var(--green); border-radius: 3px; transition: width .05s; }
+  .footer { margin-top: 24px; font-size: 12px; color: var(--text3); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">🐱</div>
+  <h1>Gato Preto Radio</h1>
+  <p class="sub">Join as a live caller</p>
+
+  <label for="nameInput">Your name</label>
+  <input id="nameInput" type="text" placeholder="e.g. Maria" maxlength="32" autocomplete="off">
+
+  <button class="btn btn-connect" id="btnConnect">🎙 Connect</button>
+  <button class="btn btn-disconnect" id="btnDisconnect">✕ Disconnect</button>
+
+  <div class="status">
+    <span class="dot" id="dot"></span>
+    <span id="statusText">Enter your name and click Connect</span>
+  </div>
+  <div class="level-wrap"><div class="level-bar" id="levelBar"></div></div>
+  <p class="footer">Your microphone will be heard on air when the DJ opens your channel.</p>
+</div>
+
+<script>
+/* ── State ──────────────────────────────────────────────────────────── */
+let ws = null, device = null, transport = null, producer = null;
+let audioCtx = null, analyser = null, levelTimer = null;
+let guestId   = null;
+
+const nameInput   = document.getElementById('nameInput');
+const btnConnect  = document.getElementById('btnConnect');
+const btnDisc     = document.getElementById('btnDisconnect');
+const dot         = document.getElementById('dot');
+const statusText  = document.getElementById('statusText');
+const levelBar    = document.getElementById('levelBar');
+
+/* ── UI helpers ─────────────────────────────────────────────────────── */
+function setStatus(msg, state) {
+  statusText.textContent = msg;
+  dot.className = 'dot' + (state ? ' ' + state : '');
+}
+
+function showDisconnect(yes) {
+  btnConnect.style.display  = yes ? 'none'  : '';
+  btnDisc.style.display     = yes ? ''      : 'none';
+  nameInput.disabled        = yes;
+}
+
+/* ── Level meter ────────────────────────────────────────────────────── */
+function startLevel(stream) {
+  audioCtx  = new AudioContext();
+  const src = audioCtx.createMediaStreamSource(stream);
+  analyser  = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  src.connect(analyser);
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  levelTimer = setInterval(() => {
+    analyser.getByteFrequencyData(buf);
+    const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+    levelBar.style.width = Math.min(100, avg * 2.5).toFixed(1) + '%';
+  }, 50);
+}
+function stopLevel() {
+  clearInterval(levelTimer);
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  levelBar.style.width = '0%';
+}
+
+/* ── mediasoup-client ────────────────────────────────────────────────── */
+// Load mediasoup-client from the server (served by Chilled Koala)
+async function loadMediasoupClient() {
+  return new Promise((res, rej) => {
+    if (window.mediasoupClient) return res(window.mediasoupClient);
+    const s = document.createElement('script');
+    s.src = '/mediasoup-client.js';
+    s.onload  = () => res(window.mediasoupClient);
+    s.onerror = () => rej(new Error('Failed to load mediasoup-client.js'));
+    document.head.appendChild(s);
+  });
+}
+
+/* ── WebSocket signalling ────────────────────────────────────────────── */
+function send(type, payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type, payload: payload || {} }));
+  }
+}
+
+let _pending = {};
+function rpc(type, payload) {
+  return new Promise((res, rej) => {
+    _pending[type] = { res, rej };
+    send(type, payload);
+    setTimeout(() => { if (_pending[type]) { delete _pending[type]; rej(new Error('RPC timeout: ' + type)); }}, 10000);
+  });
+}
+
+/* ── Connect flow ────────────────────────────────────────────────────── */
+btnConnect.addEventListener('click', async () => {
+  const name = nameInput.value.trim();
+  if (!name) { nameInput.focus(); return; }
+
+  btnConnect.disabled = true;
+  setStatus('Requesting microphone…', 'connecting');
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (e) {
+    setStatus('Microphone denied: ' + e.message, '');
+    btnConnect.disabled = false;
+    return;
+  }
+
+  setStatus('Loading WebRTC…', 'connecting');
+  let msc;
+  try { msc = await loadMediasoupClient(); }
+  catch (e) { setStatus('WebRTC load failed: ' + e.message, ''); btnConnect.disabled = false; return; }
+
+  setStatus('Connecting…', 'connecting');
+
+  // Open WebSocket to Chilled Koala guest signalling endpoint
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/guest`);
+
+  ws.onclose = () => {
+    setStatus('Disconnected', '');
+    showDisconnect(false);
+    stopLevel();
+    btnConnect.disabled = false;
+    producer = null; transport = null; device = null;
+  };
+
+  ws.onerror = () => setStatus('Connection error', '');
+
+  ws.onmessage = async (ev) => {
+    const msg = JSON.parse(ev.data);
+    const { type, payload } = msg;
+
+    // Resolve pending RPC
+    if (_pending[type]) {
+      const p = _pending[type];
+      delete _pending[type];
+      if (payload?.error) p.rej(new Error(payload.error));
+      else p.res(payload);
+      return;
+    }
+
+    if (type === 'guest:welcome') {
+      guestId = payload.guestId;
+
+      // Send our name
+      send('guest:name', { name });
+
+      // Build mediasoup Device
+      try {
+        device = new msc.Device();
+        const caps = await rpc('guest:rtpCapabilities', {});
+        await device.load({ routerRtpCapabilities: caps });
+
+        // Create send transport
+        const tParams = await rpc('guest:createTransport', {});
+        transport = device.createSendTransport(tParams);
+
+        transport.on('connect', async ({ dtlsParameters }, cb, eb) => {
+          try { await rpc('guest:connectTransport', { dtlsParameters }); cb(); }
+          catch (e) { eb(e); }
+        });
+
+        transport.on('produce', async ({ kind, rtpParameters }, cb, eb) => {
+          try {
+            const { producerId } = await rpc('guest:produce', { kind, rtpParameters });
+            cb({ id: producerId });
+          } catch (e) { eb(e); }
+        });
+
+        // Produce mic audio
+        const track = stream.getAudioTracks()[0];
+        producer = await transport.produce({ track });
+
+        startLevel(stream);
+        showDisconnect(true);
+        setStatus('On standby — DJ will open your channel', 'live');
+      } catch (e) {
+        setStatus('WebRTC error: ' + e.message, '');
+        ws.close();
+        btnConnect.disabled = false;
+      }
+    }
+
+    if (type === 'guest:onAir') {
+      if (payload.inTB) {
+        setStatus('🎧 TALKBACK — speaking privately with host (off air)', 'connecting');
+      } else if (payload.onAir) {
+        setStatus(`🔴 ON AIR — you are live on CH${payload.ch}!`, 'live');
+      } else {
+        setStatus('On standby — host will open your channel', '');
+      }
+    }
+  };
+});
+
+btnDisc.addEventListener('click', () => {
+  send('guest:leave', {});
+  ws?.close();
+  showDisconnect(false);
+  stopLevel();
+  setStatus('Disconnected', '');
+  btnConnect.disabled = false;
+  producer = null; transport = null; device = null;
+});
+</script>
+</body>
+</html>

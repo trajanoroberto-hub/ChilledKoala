@@ -2013,12 +2013,43 @@ app.post('/api/config/library', primaryOnly, (req, res) => {
 app.get('/api/playlist', auth_, (req, res) => res.json(playlist.getList()));
 
 // ── AzuraCast proxy ───────────────────────────────────────────────────────────
+// Follows one HTTP→HTTPS redirect automatically (nginx on port 80 redirects to HTTPS).
+function _azRequest(opts, data, resolve, reject) {
+    const mod = opts._https ? require('https') : http;
+    const req = mod.request(opts, (res_) => {
+        if (res_.statusCode >= 300 && res_.statusCode < 400 && res_.headers.location && !opts._redirected) {
+            res_.resume();
+            const loc = new URL(res_.headers.location);
+            const isHttps = loc.protocol === 'https:';
+            const rOpts = { ...opts,
+                _redirected: true, _https: isHttps,
+                hostname: loc.hostname,
+                port: parseInt(loc.port || (isHttps ? 443 : 80)),
+                path: loc.pathname + (loc.search || ''),
+            };
+            if (data) rOpts.headers = { ...opts.headers, 'Content-Length': Buffer.byteLength(data) };
+            return _azRequest(rOpts, data, resolve, reject);
+        }
+        let buf = '';
+        res_.on('data', d => buf += d);
+        res_.on('end', () => {
+            try { resolve({ status: res_.statusCode, body: JSON.parse(buf) }); }
+            catch { resolve({ status: res_.statusCode, body: buf }); }
+        });
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => req.destroy());
+    if (data) req.write(data);
+    req.end();
+}
+
 function _azFetch(method, path_, body) {
     return new Promise((resolve, reject) => {
         const az   = config.azuracast || {};
         const data = body ? JSON.stringify(body) : null;
         const useHttps = az.https === 'true';
         const opts = {
+            _https:             useHttps,
             hostname:           az.server || '127.0.0.1',
             port:               parseInt(az.port || (useHttps ? 443 : 80)),
             path:               path_,
@@ -2028,21 +2059,9 @@ function _azFetch(method, path_, body) {
                 'Content-Type': 'application/json',
                 ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
             },
-            rejectUnauthorized: false,  // AzuraCast cert is for domain, not 127.0.0.1
+            rejectUnauthorized: false,
         };
-        const mod = useHttps ? require('https') : http;
-        const req = mod.request(opts, (res_) => {
-            let buf = '';
-            res_.on('data', d => buf += d);
-            res_.on('end', () => {
-                try { resolve({ status: res_.statusCode, body: JSON.parse(buf) }); }
-                catch { resolve({ status: res_.statusCode, body: buf }); }
-            });
-        });
-        req.on('error', reject);
-        req.setTimeout(10000, () => req.destroy());
-        if (data) req.write(data);
-        req.end();
+        _azRequest(opts, data, resolve, reject);
     });
 }
 

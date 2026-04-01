@@ -2017,18 +2017,20 @@ function _azFetch(method, path_, body) {
     return new Promise((resolve, reject) => {
         const az   = config.azuracast || {};
         const data = body ? JSON.stringify(body) : null;
+        const useHttps = az.https === 'true';
         const opts = {
-            hostname: az.server     || '127.0.0.1',
-            port:     parseInt(az.port || 80),
-            path:     path_,
+            hostname:           az.server || '127.0.0.1',
+            port:               parseInt(az.port || (useHttps ? 443 : 80)),
+            path:               path_,
             method,
             headers: {
                 'X-API-Key':    az.api_key || '',
                 'Content-Type': 'application/json',
                 ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
             },
+            rejectUnauthorized: false,  // AzuraCast cert is for domain, not 127.0.0.1
         };
-        const mod = (az.https === 'true') ? require('https') : http;
+        const mod = useHttps ? require('https') : http;
         const req = mod.request(opts, (res_) => {
             let buf = '';
             res_.on('data', d => buf += d);

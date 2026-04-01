@@ -54,7 +54,14 @@ const CONFIG_FILE = path.join(__dirname, 'config.ini');
 
 function loadConfig() {
     try {
-        const cfg = ini.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+        const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
+        const cfg = ini.parse(raw);
+        // The ini parser treats ':' as a key=value separator, which corrupts
+        // api_key values like "abc123:def456". Extract it from the raw text instead.
+        if (cfg.azuracast) {
+            const m = raw.match(/^\s*api_key\s*[=:]\s*"?([^"\r\n]+)"?\s*(?:#.*)?$/m);
+            if (m) cfg.azuracast.api_key = m[1].trim();
+        }
         console.log('✓ config.ini loaded');
         return cfg;
     } catch (err) {
@@ -65,18 +72,16 @@ function loadConfig() {
 
 function saveConfig() {
     try {
-        fs.writeFileSync(CONFIG_FILE, ini.stringify(config));
+        let out = ini.stringify(config);
+        // ini.stringify drops the ':' half of api_key — rewrite it quoted so it
+        // survives the next reload. Works whether or not the key contains ':'.
+        const apiKey = config.azuracast?.api_key;
+        if (apiKey) out = out.replace(/^(api_key\s*=\s*).*$/m, `$1"${apiKey}"`);
+        fs.writeFileSync(CONFIG_FILE, out);
     } catch (err) {
         console.error('✗ saveConfig failed:', err.message);
     }
 }
-
-let config = loadConfig();
-
-// Strip surrounding quotes from api_key — the ini parser splits on ':',
-// so keys containing ':' must be quoted in config.ini and unquoted here.
-if (config.azuracast?.api_key !== undefined)
-    config.azuracast.api_key = (config.azuracast.api_key || '').replace(/^"|"$/g, '').trim();
 
 // ── Express ───────────────────────────────────────────────────────────────────
 

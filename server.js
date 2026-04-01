@@ -83,6 +83,8 @@ function saveConfig() {
     }
 }
 
+let config = loadConfig();
+
 // ── Express ───────────────────────────────────────────────────────────────────
 
 const app    = express();

@@ -1,8 +1,8 @@
 {
   "name": "chilled_koala",
   "version": "2.0.0",
-  "build": 370,
-  "description": "Stream Ecosystem for AzuraCast \u2014 Server-Side Playback, WebRTC Guest Calling",
+  "build": 371,
+  "description": "Stream Ecosystem for AzuraCast",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

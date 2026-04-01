@@ -1,6 +1,6 @@
 /**
  * Chilled Koala v2.0.0
- * Live Broadcasting Web App for AzuraCast — IP-12 Style Console
+ * Stream Ecosystem for AzuraCast — IP-12 Style Console
  * SPDX-License-Identifier: MIT
  * MIT License — Copyright © 2026 Trajano Roberto
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -2178,7 +2178,7 @@ server.listen(PORT, () => {
     const ic = config.icecast;
     console.log('\n╔══════════════════════════════════════════════════════════╗');
     console.log('║         🐨  CHILLED KOALA  v2.0.0  🐨                   ║');
-    console.log('║      Live Broadcasting for AzuraCast · Gato Preto       ║');
+    console.log('║        Stream Ecosystem for AzuraCast · Gato Preto       ║');
     console.log('╠══════════════════════════════════════════════════════════╣');
     console.log(`║  Server  : http://${VPS}:${PORT}`.padEnd(59) + '║');
     console.log(`║  Local   : http://localhost:${PORT}`.padEnd(59) + '║');

@@ -3962,6 +3962,117 @@ const PlaylistBuilder = (() => {
         return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    // ── View AzuraCast Playlist Contents ─────────────────────────────────────
+    async function openViewPanel() {
+        const panel   = document.getElementById('pbViewPanel');
+        const isOpen  = !panel.classList.contains('hidden');
+        panel.classList.toggle('hidden', isOpen);
+        if (isOpen) return;
+
+        const sel    = document.getElementById('pbViewSelect');
+        const status = document.getElementById('pbViewStatus');
+        const contents = document.getElementById('pbViewContents');
+        sel.innerHTML = '<option>Loading…</option>';
+        sel.disabled  = true;
+        status.textContent = '';
+        contents.classList.add('hidden');
+
+        try {
+            const r = await apiFetch('/api/azuracast/playlists');
+            if (!r.ok) { status.textContent = '✗ Cannot load playlists'; status.className = 'pb-push-status error'; return; }
+            const lists = await r.json();
+            sel.innerHTML = '';
+            lists.forEach(pl => {
+                const opt = document.createElement('option');
+                opt.value = pl.id; opt.textContent = pl.name;
+                sel.appendChild(opt);
+            });
+            sel.disabled = false;
+        } catch (e) {
+            status.textContent = '✗ ' + e.message; status.className = 'pb-push-status error';
+        }
+    }
+
+    async function loadAzContents() {
+        const sel      = document.getElementById('pbViewSelect');
+        const status   = document.getElementById('pbViewStatus');
+        const contents = document.getElementById('pbViewContents');
+        const playlistId = parseInt(sel?.value);
+        if (!playlistId) return;
+
+        status.textContent = '⏳ Loading…';
+        status.className   = 'pb-push-status loading';
+        contents.classList.add('hidden');
+        contents.innerHTML = '';
+
+        try {
+            const r    = await apiFetch(`/api/azuracast/playlist/${playlistId}/contents`);
+            const data = await r.json();
+            if (!r.ok) { status.textContent = '✗ ' + (data.error || 'Failed'); status.className = 'pb-push-status error'; return; }
+
+            status.textContent = `${data.total} track${data.total === 1 ? '' : 's'} total`;
+            status.className   = 'pb-push-status ok';
+
+            if (data.total === 0) {
+                contents.innerHTML = '<div class="pb-view-empty">Playlist is empty</div>';
+                contents.classList.remove('hidden');
+                return;
+            }
+
+            // Render folder groups
+            const ul = document.createElement('ul');
+            ul.className = 'pb-view-list';
+
+            data.folders.forEach(f => {
+                const li = document.createElement('li');
+                li.className = 'pb-view-folder-row';
+                li.innerHTML =
+                    `<span class="pb-view-icon">📁</span>` +
+                    `<span class="pb-view-path" title="${_esc(f.path)}">${_esc(f.path.split('/').pop())}</span>` +
+                    `<span class="pb-view-full-path">${_esc(f.path)}</span>` +
+                    `<span class="pb-view-count">${f.count} track${f.count === 1 ? '' : 's'}</span>` +
+                    `<button class="pb-view-del-btn" title="Remove from playlist">✕ Remove</button>`;
+                li.querySelector('.pb-view-del-btn').addEventListener('click', () =>
+                    removeAzFolder(playlistId, f.path, f.count, li));
+                ul.appendChild(li);
+            });
+
+            contents.appendChild(ul);
+            contents.classList.remove('hidden');
+        } catch (e) {
+            status.textContent = '✗ ' + e.message; status.className = 'pb-push-status error';
+        }
+    }
+
+    async function removeAzFolder(playlistId, folderPath, count, rowEl) {
+        if (!confirm(`Remove "${folderPath.split('/').pop()}" (${count} tracks) from this AzuraCast playlist?\n\nThis cannot be undone.`)) return;
+
+        const status = document.getElementById('pbViewStatus');
+        rowEl.classList.add('pb-view-removing');
+        status.textContent = `⏳ Removing ${count} tracks…`;
+        status.className   = 'pb-push-status loading';
+
+        try {
+            const r    = await apiFetch(`/api/azuracast/playlist/${playlistId}/remove`, 'POST',
+                { type: 'folder', path: folderPath });
+            const data = await r.json();
+            if (data.ok) {
+                rowEl.remove();
+                status.textContent = `✓ Removed ${data.removed} tracks (${data.remaining} remain)`;
+                status.className   = 'pb-push-status ok';
+                showToast(`Removed ${data.removed} tracks from playlist`, 'ok');
+            } else {
+                rowEl.classList.remove('pb-view-removing');
+                status.textContent = '✗ ' + (data.error || 'Remove failed');
+                status.className   = 'pb-push-status error';
+            }
+        } catch (e) {
+            rowEl.classList.remove('pb-view-removing');
+            status.textContent = '✗ ' + e.message;
+            status.className   = 'pb-push-status error';
+        }
+    }
+
     // ── Public ────────────────────────────────────────────────────────────────
     function init() {
         document.getElementById('pbExportBtn')?.addEventListener('click', exportM3U);
@@ -3971,6 +4082,12 @@ const PlaylistBuilder = (() => {
         });
         document.getElementById('pbRefreshBtn')?.addEventListener('click', loadTree);
         document.getElementById('pbPushBtn')?.addEventListener('click', pushToAzuraCast);
+        document.getElementById('pbViewBtn')?.addEventListener('click', openViewPanel);
+        document.getElementById('pbViewLoadBtn')?.addEventListener('click', loadAzContents);
+        document.getElementById('pbViewCloseBtn')?.addEventListener('click', () => {
+            document.getElementById('pbViewPanel')?.classList.add('hidden');
+        });
+        document.getElementById('pbViewSelect')?.addEventListener('change', loadAzContents);
         document.getElementById('pbPushConfirmBtn')?.addEventListener('click', doPush);
         document.getElementById('pbPushCancelBtn')?.addEventListener('click', () => {
             document.getElementById('pbPushPanel')?.classList.add('hidden');

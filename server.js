@@ -2175,6 +2175,97 @@ app.get('/', (req, res) => {
     }
 });
 
+// GET /api/azuracast/playlist/:playlistId/contents — list folders + tracks in a playlist
+app.get('/api/azuracast/playlist/:playlistId/contents', auth_, async (req, res) => {
+    const az = config.azuracast || {};
+    if (!az.api_key || !az.station_id)
+        return res.status(503).json({ error: 'AzuraCast not configured' });
+    const playlistId = parseInt(req.params.playlistId);
+    if (!playlistId) return res.status(400).json({ error: 'Invalid playlist ID' });
+    try {
+        const r = await _azFetch('GET', `/api/station/${az.station_id}/playlist/${playlistId}/export/m3u`);
+        const m3uText = typeof r.body === 'string' ? r.body : '';
+        const paths = m3uText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+
+        // Group by first 3 path segments (e.g. Music/_PublicDomain/Pop)
+        const groups = {};
+        paths.forEach(p => {
+            const parts = p.replace(/\\/g, '/').split('/');
+            const key = parts.length >= 3 ? parts.slice(0, 3).join('/') : p;
+            if (!groups[key]) groups[key] = [];
+            groups[key].push(p);
+        });
+
+        const folders = Object.entries(groups)
+            .map(([path, tracks]) => ({ path, count: tracks.length }))
+            .sort((a, b) => a.path.localeCompare(b.path));
+
+        res.json({ playlistId, total: paths.length, folders });
+    } catch (e) {
+        res.status(502).json({ error: e.message });
+    }
+});
+
+// POST /api/azuracast/playlist/:playlistId/remove — remove a folder or tracks from a playlist
+// Body: { type:'folder', path:'Music/_PublicDomain/Pop' }
+//    or { type:'tracks', paths:['Music/...'] }
+app.post('/api/azuracast/playlist/:playlistId/remove', primaryOnly, async (req, res) => {
+    const az = config.azuracast || {};
+    if (!az.api_key || !az.station_id)
+        return res.status(503).json({ error: 'AzuraCast not configured' });
+    const playlistId = parseInt(req.params.playlistId);
+    const { type, path: folderPath, paths: trackPaths } = req.body;
+    if (!playlistId) return res.status(400).json({ error: 'Invalid playlist ID' });
+    if (type !== 'folder' && type !== 'tracks') return res.status(400).json({ error: 'type must be folder or tracks' });
+
+    try {
+        // Save current order setting
+        const plInfo = await _azFetch('GET', `/api/station/${az.station_id}/playlist/${playlistId}`);
+        const origOrder = plInfo.body.order || 'shuffle';
+
+        // Switch to sequential so /order endpoint works
+        await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}`,
+            { type: 'default', order: 'sequential', source: 'songs' });
+
+        // Fetch all items — uses media_id (NOT the StationPlaylistMedia record id)
+        const orderR = await _azFetch('GET', `/api/station/${az.station_id}/playlist/${playlistId}/order`);
+        const items = Array.isArray(orderR.body) ? orderR.body : [];
+
+        // Decide which items to keep
+        let remaining;
+        if (type === 'folder') {
+            const prefix = (folderPath || '').replace(/\\/g, '/').replace(/\/$/, '') + '/';
+            remaining = items.filter(item => {
+                const p = (item.media?.path || '').replace(/\\/g, '/');
+                return !p.startsWith(prefix);
+            });
+        } else {
+            const pathSet = new Set((trackPaths || []).map(p => p.replace(/\\/g, '/')));
+            remaining = items.filter(item => !pathSet.has((item.media?.path || '').replace(/\\/g, '/')));
+        }
+
+        const removed = items.length - remaining.length;
+
+        // Replace playlist contents with only the remaining items (media_id is the correct id field)
+        const orderBody = remaining
+            .filter(item => item.media_id)
+            .map((item, idx) => ({ id: item.media_id, weight: idx + 1 }));
+        await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}/order`, orderBody);
+
+        // Restore original order mode
+        await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}`,
+            { type: 'default', order: origOrder, source: 'songs' });
+
+        process.stdout.write(`[azuracast] removed ${removed} items from playlist ${playlistId} (${remaining.length} remain)\n`);
+        res.json({ ok: true, removed, remaining: remaining.length });
+    } catch (e) {
+        // Best-effort restore
+        try { await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}`,
+            { type: 'default', order: 'shuffle', source: 'songs' }); } catch {}
+        res.status(502).json({ error: e.message });
+    }
+});
+
 // ── Broadcast & helpers ───────────────────────────────────────────────────────
 
 function broadcast(msg) {

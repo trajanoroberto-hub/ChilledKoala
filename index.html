@@ -464,6 +464,7 @@
         <span id="pbTotal" class="pb-total"></span>
         <button id="pbClearBtn"  class="btn-danger-sm  pb-toolbar-btn">✕ Clear</button>
         <button id="pbExportBtn" class="btn-secondary   pb-toolbar-btn">⬇ M3U</button>
+        <button id="pbViewBtn"   class="btn-secondary   pb-toolbar-btn">🔍 AzuraCast Contents</button>
         <button id="pbPushBtn"   class="btn-primary     pb-toolbar-btn">📡 Push to AzuraCast</button>
       </div>
       <div id="pbPushPanel" class="pb-push-panel hidden">
@@ -472,6 +473,16 @@
         <button id="pbPushConfirmBtn" class="btn-primary pb-push-go">✓ Push</button>
         <button id="pbPushCancelBtn"  class="btn-secondary pb-push-cancel">✕</button>
         <span id="pbPushStatus" class="pb-push-status"></span>
+      </div>
+      <div id="pbViewPanel" class="pb-view-panel hidden">
+        <div class="pb-view-header">
+          <label class="pb-push-label">AzuraCast playlist:</label>
+          <select id="pbViewSelect" class="pb-push-select"></select>
+          <button id="pbViewLoadBtn" class="btn-primary pb-push-go">Load</button>
+          <button id="pbViewCloseBtn" class="btn-secondary pb-push-cancel">✕</button>
+          <span id="pbViewStatus" class="pb-push-status"></span>
+        </div>
+        <div id="pbViewContents" class="pb-view-contents hidden"></div>
       </div>
       <div id="pbPlaylistWrap">
         <table id="pbPlaylistTable">

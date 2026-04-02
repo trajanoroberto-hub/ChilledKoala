@@ -1055,6 +1055,28 @@ html, body {
 .pb-push-status.error   { color: #ef4444; }
 .pb-push-status.loading { color: var(--cyan2); }
 
+/* AzuraCast Playlist Contents viewer */
+.pb-view-panel      { border-top: 1px solid var(--bdr); padding: 8px 12px 4px; background: var(--bg2); }
+.pb-view-panel.hidden { display: none; }
+.pb-view-header     { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.pb-view-contents   { max-height: 220px; overflow-y: auto; }
+.pb-view-contents.hidden { display: none; }
+.pb-view-list       { list-style: none; margin: 0; padding: 0; }
+.pb-view-empty      { padding: 12px; text-align: center; color: var(--text3); font-size: 12px; }
+.pb-view-folder-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px;
+                      border-bottom: 1px solid var(--bdr); font-size: 12px; }
+.pb-view-folder-row:hover { background: rgba(0,180,200,.07); }
+.pb-view-removing   { opacity: .4; pointer-events: none; }
+.pb-view-icon       { flex-shrink: 0; font-size: 14px; }
+.pb-view-path       { font-weight: 600; color: var(--text); flex-shrink: 0; }
+.pb-view-full-path  { font-size: 10px; color: var(--text3); flex: 1; overflow: hidden;
+                      text-overflow: ellipsis; white-space: nowrap; }
+.pb-view-count      { font-size: 11px; color: var(--text3); white-space: nowrap; flex-shrink: 0; font-family: monospace; }
+.pb-view-del-btn    { padding: 2px 8px; font-size: 11px; background: transparent;
+                      border: 1px solid var(--bdr); color: #ef4444; border-radius: 3px;
+                      cursor: pointer; flex-shrink: 0; }
+.pb-view-del-btn:hover { background: rgba(239,68,68,.12); }
+
 /* Playlist table */
 #pbPlaylistTable   { width: 100%; border-collapse: collapse; font-size: 12px; }
 #pbPlaylistTable thead th { position: sticky; top: 0; background: var(--bg2);

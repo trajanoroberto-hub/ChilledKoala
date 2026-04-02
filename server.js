@@ -2097,20 +2097,39 @@ app.post('/api/azuracast/playlist/push', primaryOnly, async (req, res) => {
         return (stationRoot && p.startsWith(stationRoot)) ? p.slice(stationRoot.length) : p;
     }
 
-    async function batchAssign(filePaths) {
-        const CHUNK = 200;
-        let last = { status: 200 };
-        for (let i = 0; i < filePaths.length; i += CHUNK) {
-            last = await _azFetch('PUT', `/api/station/${az.station_id}/files/batch`, {
-                do: 'playlist', playlist: [playlistId], files: filePaths.slice(i, i + CHUNK),
-            });
-        }
-        return last;
+    // Import file paths into a playlist via M3U upload
+    // POST /api/station/{id}/playlist/{id}/import (singular "playlist")
+    async function m3uImport(filePaths) {
+        const m3u = '#EXTM3U\n' + filePaths.map(p => `#EXTINF:-1,\n${p}`).join('\n') + '\n';
+        const boundary = 'CKBoundary' + Date.now();
+        const form = Buffer.from(
+            `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="playlist_file"; filename="playlist.m3u"\r\n` +
+            `Content-Type: audio/x-mpegurl\r\n\r\n` +
+            `${m3u}\r\n--${boundary}--\r\n`
+        );
+        return new Promise((resolve, reject) => {
+            const useHttps = az.https === 'true';
+            const opts = {
+                _https:             useHttps,
+                hostname:           az.server || '127.0.0.1',
+                port:               parseInt(az.port || (useHttps ? 443 : 80)),
+                path:               `/api/station/${az.station_id}/playlist/${parseInt(playlistId)}/import`,
+                method:             'POST',
+                headers: {
+                    'X-API-Key':    az.api_key || '',
+                    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                    'Content-Length': form.length,
+                },
+                rejectUnauthorized: false,
+            };
+            _azRequest(opts, form, resolve, reject);
+        });
     }
 
     const results = [];
 
-    // Folders: enumerate all files via AzuraCast files API, then batch assign
+    // Folders: enumerate all files via AzuraCast files API, then M3U import
     for (const folderAbs of folders) {
         try {
             const relFolder = toRelPath(folderAbs);
@@ -2129,21 +2148,23 @@ app.post('/api/azuracast/playlist/push', primaryOnly, async (req, res) => {
                 results.push({ type: 'folder', folder: relFolder, status: 404, error: 'No files found in folder' });
                 continue;
             }
-            const r = await batchAssign(filePaths);
-            results.push({ type: 'folder', folder: relFolder, files: filePaths.length, status: r.status });
-            process.stdout.write(`[azuracast] folder push ${relFolder} (${filePaths.length} files) → HTTP ${r.status}\n`);
+            const r = await m3uImport(filePaths);
+            const matched = r.body?.message?.match(/(\d+) of (\d+)/);
+            results.push({ type: 'folder', folder: relFolder, files: filePaths.length,
+                matched: matched ? parseInt(matched[1]) : null, status: r.status });
+            process.stdout.write(`[azuracast] folder push ${relFolder} playlist=${playlistId} (${filePaths.length} files) → HTTP ${r.status} ${r.body?.message || ''}\n`);
         } catch (e) {
             results.push({ type: 'folder', folder: folderAbs, status: 0, error: e.message });
         }
     }
 
-    // Individual tracks: batch assign by relative path
+    // Individual tracks: M3U import by relative path
     if (tracks.length > 0) {
         try {
             const filePaths = tracks.map(t => toRelPath(t.path)).filter(Boolean);
-            const r = await batchAssign(filePaths);
+            const r = await m3uImport(filePaths);
             results.push({ type: 'tracks', files: filePaths.length, status: r.status });
-            process.stdout.write(`[azuracast] tracks push (${filePaths.length} tracks) → HTTP ${r.status}\n`);
+            process.stdout.write(`[azuracast] tracks push playlist=${playlistId} (${filePaths.length} tracks) → HTTP ${r.status}\n`);
         } catch (e) {
             results.push({ type: 'tracks', status: 0, error: e.message });
         }

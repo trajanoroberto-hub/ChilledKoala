@@ -4013,15 +4013,28 @@ const PlaylistBuilder = (() => {
             status.textContent = `${data.total} track${data.total === 1 ? '' : 's'} total`;
             status.className   = 'pb-push-status ok';
 
-            if (data.total === 0) {
+            if (data.total === 0 || (data.folders.length === 0 && data.tracks.length === 0)) {
                 contents.innerHTML = '<div class="pb-view-empty">Playlist is empty</div>';
                 contents.classList.remove('hidden');
                 return;
             }
 
-            // Render folder groups
+            // Render folder groups and individual tracks
             const ul = document.createElement('ul');
             ul.className = 'pb-view-list';
+
+            if (false) {
+                contents.innerHTML = '<div class="pb-view-empty">Playlist is empty</div>';
+                contents.classList.remove('hidden');
+                return;
+            }
+
+            if (data.folders.length > 0) {
+                const hdr = document.createElement('div');
+                hdr.className = 'pb-view-section-hdr';
+                hdr.textContent = `Folders (${data.folders.length})`;
+                contents.appendChild(hdr);
+            }
 
             data.folders.forEach(f => {
                 const li = document.createElement('li');
@@ -4031,16 +4044,59 @@ const PlaylistBuilder = (() => {
                     `<span class="pb-view-path" title="${_esc(f.path)}">${_esc(f.path.split('/').pop())}</span>` +
                     `<span class="pb-view-full-path">${_esc(f.path)}</span>` +
                     `<span class="pb-view-count">${f.count} track${f.count === 1 ? '' : 's'}</span>` +
-                    `<button class="pb-view-del-btn" title="Remove from playlist">✕ Remove</button>`;
+                    `<button class="pb-view-del-btn" title="Remove folder from playlist">✕ Remove</button>`;
                 li.querySelector('.pb-view-del-btn').addEventListener('click', () =>
                     removeAzFolder(playlistId, f.path, f.count, li));
                 ul.appendChild(li);
             });
 
+            if (data.tracks.length > 0) {
+                const hdr = document.createElement('div');
+                hdr.className = 'pb-view-section-hdr';
+                hdr.textContent = `Individual Tracks (${data.tracks.length}${data.tracks.length === 500 ? '+' : ''})`;
+                contents.appendChild(hdr);
+                data.tracks.forEach(p => {
+                    const li = document.createElement('li');
+                    li.className = 'pb-view-track-row';
+                    const fname = p.split('/').pop();
+                    li.innerHTML =
+                        `<span class="pb-view-icon">🎵</span>` +
+                        `<span class="pb-view-path" title="${_esc(p)}">${_esc(fname)}</span>` +
+                        `<span class="pb-view-full-path">${_esc(p)}</span>` +
+                        `<button class="pb-view-del-btn" title="Remove track from playlist">✕</button>`;
+                    li.querySelector('.pb-view-del-btn').addEventListener('click', () =>
+                        removeAzTracks(playlistId, [p], li));
+                    ul.appendChild(li);
+                });
+            }
+
             contents.appendChild(ul);
             contents.classList.remove('hidden');
         } catch (e) {
             status.textContent = '✗ ' + e.message; status.className = 'pb-push-status error';
+        }
+    }
+
+    async function removeAzTracks(playlistId, paths, rowEl) {
+        rowEl.classList.add('pb-view-removing');
+        const status = document.getElementById('pbViewStatus');
+        try {
+            const r    = await apiFetch(`/api/azuracast/playlist/${playlistId}/remove`, 'POST',
+                { type: 'tracks', paths });
+            const data = await r.json();
+            if (data.ok) {
+                rowEl.remove();
+                status.textContent = `✓ Track removed (${data.remaining} remain)`;
+                status.className   = 'pb-push-status ok';
+            } else {
+                rowEl.classList.remove('pb-view-removing');
+                status.textContent = '✗ ' + (data.error || 'Remove failed');
+                status.className   = 'pb-push-status error';
+            }
+        } catch (e) {
+            rowEl.classList.remove('pb-view-removing');
+            status.textContent = '✗ ' + e.message;
+            status.className   = 'pb-push-status error';
         }
     }
 

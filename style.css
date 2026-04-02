@@ -1072,6 +1072,12 @@ html, body {
 .pb-view-full-path  { font-size: 10px; color: var(--text3); flex: 1; overflow: hidden;
                       text-overflow: ellipsis; white-space: nowrap; }
 .pb-view-count      { font-size: 11px; color: var(--text3); white-space: nowrap; flex-shrink: 0; font-family: monospace; }
+.pb-view-section-hdr { padding: 5px 8px 3px; font-size: 10px; font-weight: 700;
+                       color: var(--text3); text-transform: uppercase; letter-spacing: .06em;
+                       background: var(--bg3); border-bottom: 1px solid var(--bdr); }
+.pb-view-track-row  { display: flex; align-items: center; gap: 8px; padding: 5px 4px;
+                      border-bottom: 1px solid var(--bdr); font-size: 12px; }
+.pb-view-track-row:hover { background: rgba(0,180,200,.04); }
 .pb-view-del-btn    { padding: 2px 8px; font-size: 11px; background: transparent;
                       border: 1px solid var(--bdr); color: #ef4444; border-radius: 3px;
                       cursor: pointer; flex-shrink: 0; }

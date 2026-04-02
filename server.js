@@ -27,6 +27,7 @@ const path      = require('path');
 const fs        = require('fs');
 const ini       = require('ini');
 const crypto    = require('crypto');
+const { spawn } = require('child_process');
 
 // ── Build number — single source of truth: package.json ──────────────────────
 const BUILD = (() => {
@@ -2013,6 +2014,63 @@ app.post('/api/config/library', primaryOnly, (req, res) => {
 app.get('/api/playlist', auth_, (req, res) => res.json(playlist.getList()));
 
 // ── AzuraCast proxy ───────────────────────────────────────────────────────────
+// ── AzuraCast direct-DB helpers (via Docker MariaDB) ─────────────────────────
+// Reads credentials from /var/azuracast/azuracast.env (present on AzuraCast VPS).
+// Falls back gracefully when not available (non-VPS dev environments).
+let _azDBCfg = undefined;
+function _getAzDBCfg() {
+    if (_azDBCfg !== undefined) return _azDBCfg;
+    try {
+        const raw = fs.readFileSync('/var/azuracast/azuracast.env', 'utf-8');
+        const cfg = {};
+        raw.split('\n').forEach(l => { const m = l.match(/^([A-Z_]+)\s*=\s*(.+)$/); if (m) cfg[m[1]] = m[2].trim(); });
+        _azDBCfg = { user: cfg.MYSQL_USER || 'azuracast', pass: cfg.MYSQL_PASSWORD || '', db: cfg.MYSQL_DATABASE || 'azuracast' };
+        console.log('✓ AzuraCast DB config loaded');
+    } catch { _azDBCfg = null; }
+    return _azDBCfg;
+}
+
+// Execute SQL against the AzuraCast MariaDB inside Docker.
+// Returns raw tab-separated stdout string; throws on error.
+function _azDB(sql) {
+    const db = _getAzDBCfg();
+    if (!db) return Promise.reject(new Error('AzuraCast DB not available (not on AzuraCast VPS)'));
+    return new Promise((resolve, reject) => {
+        const child = spawn('docker', [
+            'exec', '-i', '-e', `MYSQL_PWD=${db.pass}`,
+            'azuracast', 'mariadb', `-u${db.user}`, db.db,
+            '--batch', '--skip-column-names'
+        ]);
+        let out = '', err = '';
+        child.stdout.on('data', d => out += d);
+        child.stderr.on('data', d => err += d);
+        child.on('close', code => {
+            if (code !== 0) reject(new Error(err.split('\n').find(l => l.trim()) || `DB exit ${code}`));
+            else resolve(out.trim());
+        });
+        child.on('error', reject);
+        child.stdin.write(sql + '\n');
+        child.stdin.end();
+    });
+}
+
+// Parse tab-separated DB output into array of objects.
+function _azDBRows(raw, cols) {
+    if (!raw) return [];
+    return raw.split('\n').filter(l => l).map(line => {
+        const vals = line.split('\t');
+        if (!cols) return vals;
+        const obj = {};
+        cols.forEach((c, i) => { obj[c] = vals[i] !== undefined ? vals[i] : null; });
+        return obj;
+    });
+}
+
+// Escape a string value for embedding in a SQL single-quoted literal.
+function _sqlEsc(s) {
+    return String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\x00/g, '').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+}
+
 // Follows one HTTP→HTTPS redirect automatically (nginx on port 80 redirects to HTTPS).
 function _azRequest(opts, data, resolve, reject) {
     const mod = opts._https ? require('https') : http;
@@ -2175,93 +2233,113 @@ app.get('/', (req, res) => {
     }
 });
 
-// GET /api/azuracast/playlist/:playlistId/contents — list folders + tracks in a playlist
+// GET /api/azuracast/playlist/:playlistId/contents
+// Returns folders (with dynamic link + track count) and individual tracks in the playlist.
 app.get('/api/azuracast/playlist/:playlistId/contents', auth_, async (req, res) => {
     const az = config.azuracast || {};
-    if (!az.api_key || !az.station_id)
-        return res.status(503).json({ error: 'AzuraCast not configured' });
+    if (!az.station_id) return res.status(503).json({ error: 'AzuraCast not configured' });
     const playlistId = parseInt(req.params.playlistId);
     if (!playlistId) return res.status(400).json({ error: 'Invalid playlist ID' });
+    const sid = parseInt(az.station_id);
     try {
-        const r = await _azFetch('GET', `/api/station/${az.station_id}/playlist/${playlistId}/export/m3u`);
-        const m3uText = typeof r.body === 'string' ? r.body : '';
-        const paths = m3uText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+        // Folders with dynamic link + track count
+        const fRaw = await _azDB(
+            `SELECT spf.path,
+                (SELECT COUNT(*) FROM station_playlist_media spm
+                 JOIN station_media sm ON spm.media_id=sm.id
+                 WHERE spm.playlist_id=${playlistId}
+                 AND sm.path LIKE CONCAT('${_sqlEsc('')}', spf.path, '/%')) AS cnt
+             FROM station_playlist_folders spf
+             WHERE spf.station_id=${sid} AND spf.playlist_id=${playlistId}
+             ORDER BY spf.path;`
+        );
+        const folders = _azDBRows(fRaw, ['path', 'count'])
+            .map(r => ({ path: r.path, count: parseInt(r.count) || 0 }));
 
-        // Group by first 3 path segments (e.g. Music/_PublicDomain/Pop)
-        const groups = {};
-        paths.forEach(p => {
-            const parts = p.replace(/\\/g, '/').split('/');
-            const key = parts.length >= 3 ? parts.slice(0, 3).join('/') : p;
-            if (!groups[key]) groups[key] = [];
-            groups[key].push(p);
-        });
+        // Individual tracks: in playlist_media but NOT under any folder link
+        const tRaw = await _azDB(
+            `SELECT sm.path
+             FROM station_playlist_media spm
+             JOIN station_media sm ON spm.media_id=sm.id
+             WHERE spm.playlist_id=${playlistId}
+             AND NOT EXISTS (
+                 SELECT 1 FROM station_playlist_folders spf
+                 WHERE spf.station_id=${sid} AND spf.playlist_id=${playlistId}
+                 AND sm.path LIKE CONCAT(spf.path, '/%')
+             )
+             ORDER BY sm.path
+             LIMIT 500;`
+        );
+        const tracks = _azDBRows(tRaw).map(r => r[0]).filter(Boolean);
 
-        const folders = Object.entries(groups)
-            .map(([path, tracks]) => ({ path, count: tracks.length }))
-            .sort((a, b) => a.path.localeCompare(b.path));
+        // Total track count
+        const totRaw = await _azDB(
+            `SELECT COUNT(*) FROM station_playlist_media WHERE playlist_id=${playlistId};`
+        );
+        const total = parseInt((totRaw || '0').split('\t')[0]) || 0;
 
-        res.json({ playlistId, total: paths.length, folders });
+        res.json({ playlistId, total, folders, tracks });
     } catch (e) {
         res.status(502).json({ error: e.message });
     }
 });
 
-// POST /api/azuracast/playlist/:playlistId/remove — remove a folder or tracks from a playlist
+// POST /api/azuracast/playlist/:playlistId/remove
 // Body: { type:'folder', path:'Music/_PublicDomain/Pop' }
-//    or { type:'tracks', paths:['Music/...'] }
+//    or { type:'tracks', paths:['Music/...', ...] }
+// Removes the folder LINK (dynamic assignment) AND the track entries simultaneously.
 app.post('/api/azuracast/playlist/:playlistId/remove', primaryOnly, async (req, res) => {
     const az = config.azuracast || {};
-    if (!az.api_key || !az.station_id)
-        return res.status(503).json({ error: 'AzuraCast not configured' });
+    if (!az.station_id) return res.status(503).json({ error: 'AzuraCast not configured' });
     const playlistId = parseInt(req.params.playlistId);
     const { type, path: folderPath, paths: trackPaths } = req.body;
     if (!playlistId) return res.status(400).json({ error: 'Invalid playlist ID' });
     if (type !== 'folder' && type !== 'tracks') return res.status(400).json({ error: 'type must be folder or tracks' });
-
+    const sid = parseInt(az.station_id);
     try {
-        // Save current order setting
-        const plInfo = await _azFetch('GET', `/api/station/${az.station_id}/playlist/${playlistId}`);
-        const origOrder = plInfo.body.order || 'shuffle';
-
-        // Switch to sequential so /order endpoint works
-        await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}`,
-            { type: 'default', order: 'sequential', source: 'songs' });
-
-        // Fetch all items — uses media_id (NOT the StationPlaylistMedia record id)
-        const orderR = await _azFetch('GET', `/api/station/${az.station_id}/playlist/${playlistId}/order`);
-        const items = Array.isArray(orderR.body) ? orderR.body : [];
-
-        // Decide which items to keep
-        let remaining;
+        let removed = 0;
         if (type === 'folder') {
-            const prefix = (folderPath || '').replace(/\\/g, '/').replace(/\/$/, '') + '/';
-            remaining = items.filter(item => {
-                const p = (item.media?.path || '').replace(/\\/g, '/');
-                return !p.startsWith(prefix);
-            });
+            const fp = _sqlEsc((folderPath || '').replace(/\\/g, '/').replace(/\/$/, ''));
+            if (!fp) return res.status(400).json({ error: 'path required' });
+            // 1. Remove the persistent folder→playlist link
+            await _azDB(
+                `DELETE FROM station_playlist_folders
+                 WHERE station_id=${sid} AND playlist_id=${playlistId} AND path='${fp}';`
+            );
+            // 2. Remove track entries for files in this folder
+            const delRaw = await _azDB(
+                `DELETE spm FROM station_playlist_media spm
+                 JOIN station_media sm ON spm.media_id=sm.id
+                 WHERE spm.playlist_id=${playlistId}
+                 AND sm.path LIKE '${fp}/%';
+                 SELECT ROW_COUNT();`
+            );
+            removed = parseInt((delRaw || '0').split('\n').pop()) || 0;
+            process.stdout.write(`[azuracast] removed folder link "${fp}" from playlist ${playlistId} (${removed} tracks)\n`);
         } else {
-            const pathSet = new Set((trackPaths || []).map(p => p.replace(/\\/g, '/')));
-            remaining = items.filter(item => !pathSet.has((item.media?.path || '').replace(/\\/g, '/')));
+            // Individual tracks: delete by exact path match
+            const pathList = (trackPaths || [])
+                .map(p => `'${_sqlEsc(p.replace(/\\/g, '/'))}'`)
+                .join(',');
+            if (!pathList) return res.status(400).json({ error: 'paths required' });
+            const delRaw = await _azDB(
+                `DELETE spm FROM station_playlist_media spm
+                 JOIN station_media sm ON spm.media_id=sm.id
+                 WHERE spm.playlist_id=${playlistId}
+                 AND sm.path IN (${pathList});
+                 SELECT ROW_COUNT();`
+            );
+            removed = parseInt((delRaw || '0').split('\n').pop()) || 0;
+            process.stdout.write(`[azuracast] removed ${removed} individual tracks from playlist ${playlistId}\n`);
         }
 
-        const removed = items.length - remaining.length;
-
-        // Replace playlist contents with only the remaining items (media_id is the correct id field)
-        const orderBody = remaining
-            .filter(item => item.media_id)
-            .map((item, idx) => ({ id: item.media_id, weight: idx + 1 }));
-        await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}/order`, orderBody);
-
-        // Restore original order mode
-        await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}`,
-            { type: 'default', order: origOrder, source: 'songs' });
-
-        process.stdout.write(`[azuracast] removed ${removed} items from playlist ${playlistId} (${remaining.length} remain)\n`);
-        res.json({ ok: true, removed, remaining: remaining.length });
+        // Get remaining count
+        const remRaw = await _azDB(
+            `SELECT COUNT(*) FROM station_playlist_media WHERE playlist_id=${playlistId};`
+        );
+        const remaining = parseInt((remRaw || '0').split('\t')[0]) || 0;
+        res.json({ ok: true, removed, remaining });
     } catch (e) {
-        // Best-effort restore
-        try { await _azFetch('PUT', `/api/station/${az.station_id}/playlist/${playlistId}`,
-            { type: 'default', order: 'shuffle', source: 'songs' }); } catch {}
         res.status(502).json({ error: e.message });
     }
 });

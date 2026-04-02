@@ -2079,7 +2079,7 @@ app.get('/api/azuracast/playlists', auth_, async (req, res) => {
 });
 
 // POST /api/azuracast/playlist/push — push folders and/or tracks to a playlist
-// Body: { playlistId: number, folders: [path,...], tracks: [{path,duration,artist,title,name},...] }
+// Body: { playlistId: number, folders: [absPath,...], tracks: [{path,duration,...},...] }
 app.post('/api/azuracast/playlist/push', primaryOnly, async (req, res) => {
     const az = config.azuracast || {};
     if (!az.api_key || !az.station_id)
@@ -2087,65 +2087,63 @@ app.post('/api/azuracast/playlist/push', primaryOnly, async (req, res) => {
     const { playlistId, folders = [], tracks = [] } = req.body;
     if (!playlistId) return res.status(400).json({ error: 'playlistId required' });
 
+    // Station media root = one directory above music_library_path
+    // e.g. /mnt/data/.../media/Music → /mnt/data/.../media/
+    const musicLibPath = (config.paths?.music_library_path || '').replace(/\\/g, '/').replace(/\/$/, '');
+    const stationRoot  = musicLibPath.includes('/') ? musicLibPath.slice(0, musicLibPath.lastIndexOf('/') + 1) : '';
+
+    function toRelPath(absPath) {
+        const p = (absPath || '').replace(/\\/g, '/');
+        return (stationRoot && p.startsWith(stationRoot)) ? p.slice(stationRoot.length) : p;
+    }
+
+    async function batchAssign(filePaths) {
+        const CHUNK = 200;
+        let last = { status: 200 };
+        for (let i = 0; i < filePaths.length; i += CHUNK) {
+            last = await _azFetch('PUT', `/api/station/${az.station_id}/files/batch`, {
+                do: 'playlist', playlist: [playlistId], files: filePaths.slice(i, i + CHUNK),
+            });
+        }
+        return last;
+    }
+
     const results = [];
 
-    // Folders → files/batch assign (AzuraCast auto-tracks future additions)
-    if (folders.length > 0) {
+    // Folders: enumerate all files via AzuraCast files API, then batch assign
+    for (const folderAbs of folders) {
         try {
-            const r = await _azFetch('PUT', `/api/station/${az.station_id}/files/batch`, {
-                do: 'assign', playlist: [playlistId], files: folders,
-            });
-            results.push({ type: 'folders', status: r.status });
-            process.stdout.write(`[azuracast] folder batch assign → HTTP ${r.status}\n`);
+            const relFolder = toRelPath(folderAbs);
+            const filePaths = [];
+            let page = 1;
+            while (true) {
+                const r = await _azFetch('GET',
+                    `/api/station/${az.station_id}/files?searchPhrase=${encodeURIComponent(relFolder)}&rowCount=500&page=${page}`);
+                if (r.status !== 200) break;
+                const rows = r.body.rows || (Array.isArray(r.body) ? r.body : []);
+                rows.forEach(f => { if (f.path) filePaths.push(f.path); });
+                if (rows.length < 500) break;
+                page++;
+            }
+            if (filePaths.length === 0) {
+                results.push({ type: 'folder', folder: relFolder, status: 404, error: 'No files found in folder' });
+                continue;
+            }
+            const r = await batchAssign(filePaths);
+            results.push({ type: 'folder', folder: relFolder, files: filePaths.length, status: r.status });
+            process.stdout.write(`[azuracast] folder push ${relFolder} (${filePaths.length} files) → HTTP ${r.status}\n`);
         } catch (e) {
-            results.push({ type: 'folders', status: 0, error: e.message });
+            results.push({ type: 'folder', folder: folderAbs, status: 0, error: e.message });
         }
     }
 
-    // Individual tracks → M3U import
+    // Individual tracks: batch assign by relative path
     if (tracks.length > 0) {
-        let m3u = '#EXTM3U\n';
-        tracks.forEach(t => {
-            const sec     = Math.round(t.duration || 0);
-            const display = t.artist ? `${t.artist} - ${t.title}` : (t.name || t.path);
-            m3u += `#EXTINF:${sec},${display}\n${t.path}\n`;
-        });
-        const boundary = 'CKBoundary' + Date.now();
-        const formBody  =
-            `--${boundary}\r\n` +
-            `Content-Disposition: form-data; name="playlist_file"; filename="playlist.m3u"\r\n` +
-            `Content-Type: audio/x-mpegurl\r\n\r\n` +
-            `${m3u}\r\n--${boundary}--\r\n`;
         try {
-            const r = await new Promise((resolve, reject) => {
-                const az2  = config.azuracast || {};
-                const opts = {
-                    hostname: az2.server || '127.0.0.1',
-                    port:     parseInt(az2.port || 80),
-                    path:     `/api/station/${az2.station_id}/playlists/${playlistId}/import`,
-                    method:   'POST',
-                    headers: {
-                        'X-API-Key':      az2.api_key || '',
-                        'Content-Type':   `multipart/form-data; boundary=${boundary}`,
-                        'Content-Length': Buffer.byteLength(formBody),
-                    },
-                };
-                const mod = (az2.https === 'true') ? require('https') : http;
-                const req = mod.request(opts, (res_) => {
-                    let buf = '';
-                    res_.on('data', d => buf += d);
-                    res_.on('end', () => {
-                        try { resolve({ status: res_.statusCode, body: JSON.parse(buf) }); }
-                        catch { resolve({ status: res_.statusCode, body: buf }); }
-                    });
-                });
-                req.on('error', reject);
-                req.setTimeout(10000, () => req.destroy());
-                req.write(formBody);
-                req.end();
-            });
-            results.push({ type: 'tracks', status: r.status });
-            process.stdout.write(`[azuracast] M3U import (${tracks.length} tracks) → HTTP ${r.status}\n`);
+            const filePaths = tracks.map(t => toRelPath(t.path)).filter(Boolean);
+            const r = await batchAssign(filePaths);
+            results.push({ type: 'tracks', files: filePaths.length, status: r.status });
+            process.stdout.write(`[azuracast] tracks push (${filePaths.length} tracks) → HTTP ${r.status}\n`);
         } catch (e) {
             results.push({ type: 'tracks', status: 0, error: e.message });
         }

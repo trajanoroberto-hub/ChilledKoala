@@ -521,6 +521,18 @@ html, body {
 }
 .mon-src-btn:hover:not(.active) { border-color: var(--text3); color: var(--text1); }
 
+/* MON Mic sidetone button — full-width, amber colour to distinguish from source selector */
+.mon-mic-btn {
+  width: 100%; border-radius: 4px; cursor: pointer;
+  font-size: 9px; font-weight: 900; letter-spacing: .5px;
+  padding: 5px 2px; transition: .1s;
+  border: 1px solid var(--bdr2); background: var(--bg4); color: var(--text2);
+}
+.mon-mic-btn.active {
+  background: #1a1000; border-color: #d97706; color: #fbbf24;
+  box-shadow: 0 0 6px rgba(217,119,6,.40);
+}
+.mon-mic-btn:hover:not(.active) { border-color: var(--text3); color: var(--text1); }
 
 /* ── MASTER SECTION — sibling of rtTables, same visual width as channel strips ── */
 /* PGM 1 Monitor section — identical structure to RT 1 / RT 2, sized for one ch-strip */

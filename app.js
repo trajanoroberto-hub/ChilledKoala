@@ -598,6 +598,29 @@ function buildMonitorStrip() {
         rotaryRow.appendChild(rotary);
         // Insert SOURCE selector ABOVE the ON/OFF row (PGM1/CUE on top, ON/OFF at bottom)
         onoffRow.insertAdjacentElement('beforebegin', rotaryRow);
+
+        // ── MON Mic row — sidetone toggle ────────────────────────────────────
+        // Connects Loc Mic 1/2 directly into the earphone AudioContext at 0ms
+        // so the DJ hears their own voice like a real console sidetone circuit.
+        const micRow = el('div', { className: 'mon-source-row' });
+        const micBtn = el('button', {
+            id:          'monMicBtn',
+            className:   'mon-src-btn mon-mic-btn',
+            textContent: 'MON Mic',
+            title:       'Sidetone: hear Loc Mic 1/2 in earphone at 0ms (no server round-trip)',
+        });
+        micBtn.addEventListener('click', () => {
+            if (PlayerEarphone.isSidetoneOn()) {
+                PlayerEarphone.disableSidetone();
+            } else {
+                const stream = WA.getMicStream();
+                if (stream) PlayerEarphone.enableSidetone(stream);
+                else showToast('Mic not ready — press GO LIVE first', 'warn');
+            }
+            _syncSidetoneBtn();
+        });
+        micRow.appendChild(micBtn);
+        onoffRow.insertAdjacentElement('beforebegin', micRow);
     }
 
     wrap.appendChild(strip);
@@ -3026,6 +3049,12 @@ function _syncMonitorButtons() {
     document.querySelectorAll('#monSourceRotary .mon-src-btn').forEach(b => {
         b.classList.toggle('active', b.id === `monSrc-${src}`);
     });
+    _syncSidetoneBtn();
+}
+
+function _syncSidetoneBtn() {
+    const btn = qs('#monMicBtn');
+    if (btn) btn.classList.toggle('active', PlayerEarphone.isSidetoneOn());
 }
 
 // startMicCapture — called at login ('init') and on stream:started.
@@ -3057,6 +3086,15 @@ async function startMicCapture() {
 
     // Step 3: start MediaRecorder on PGM bus (mic → _pgmBus → _streamDest → WS)
     WA.startCapture();
+
+    // Step 3b: connect sidetone — local mic into earphone at 0ms (no server round-trip).
+    // Reuses the same getUserMedia stream already captured for broadcast.
+    // If sidetone toggle is ON (default), the DJ immediately hears their own voice.
+    const _st = WA.getMicStream();
+    if (_st && PlayerEarphone.isActive()) {
+        PlayerEarphone.enableSidetone(_st);
+        _syncSidetoneBtn();
+    }
 
     // Step 4: WebRTC mic path DISABLED for local DJ mic.
     // The WebRTC → mediasoup → PlainTransport → FFmpeg RTP decode chain loses
@@ -3286,20 +3324,25 @@ function showToast(msg, type = 'info') {
 const PlayerEarphone = (() => {
     const SR          = 44100;
     const CHANNELS    = 2;
-    const JITTER_BUF  = 0.70;   // 700ms pre-roll — t1 ≈ 880ms, safety margin 520ms
-    const SCHED_AHEAD = 0.60;   // 600ms scheduled ahead = 3 full 200ms chunks
-    const CHUNK_SEC   = 0.200;  // target chunk size: merge WS frames into 200ms AudioBuffers
+    const JITTER_BUF  = 0.15;   // 150ms pre-roll — low-latency (Jacktrip-style real-time monitor)
+    const SCHED_AHEAD = 0.08;   // 80ms scheduled ahead = 4× server tick (20ms)
+    const CHUNK_SEC   = 0.040;  // 40ms chunks = 2× server tick — minimises schedule granularity
 
-    let _ctx       = null;
-    let _gain      = null;
-    let _analyser  = null;
-    let _ws        = null;
-    let _active    = false;
-    let _volume    = 0.80;
-    let _schedTime = 0;
-    let _started   = false;
-    let _rafId     = null;
-    let _queue     = [];        // Float32Array chunks, one per WS frame
+    let _ctx        = null;
+    let _gain       = null;
+    let _analyser   = null;
+    let _ws         = null;
+    let _active     = false;
+    let _volume     = 0.80;
+    let _schedTime  = 0;
+    let _started    = false;
+    let _rafId      = null;
+    let _queue      = [];       // Float32Array chunks, one per WS frame
+
+    // ── Sidetone — browser-local mic self-monitoring (0ms, no server round-trip) ─
+    let _sideSource = null;     // MediaStreamSource node (mic stream in earphone AudioContext)
+    let _sideGain   = null;     // GainNode controlling sidetone level
+    let _sidetoneOn = false;    // true when sidetone is connected
 
     function _ensureCtx() {
         if (_ctx) return;
@@ -3402,7 +3445,17 @@ const PlayerEarphone = (() => {
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         _ws = new WebSocket(`${proto}://${location.host}/ws/mon`);
         _ws.binaryType = 'arraybuffer';
-        _ws.onopen  = () => console.log('[PE] scheduler active — /ws/mon ✓  jitter=' + JITTER_BUF + 's');
+        _ws.onopen  = () => {
+            console.log('[PE] scheduler active — /ws/mon ✓  jitter=' + JITTER_BUF + 's  (' + Math.round(JITTER_BUF*1000) + 'ms)');
+            // Auto-calibrate server mic delay to match this jitter buffer depth.
+            // Server delays Loc Mic 1/2 in Mix 2 by this amount so DJ voice is
+            // synchronised with PGM1 music in the Icecast broadcast.
+            fetch('/api/mic-delay', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ms: Math.round(JITTER_BUF * 1000) }),
+            }).catch(() => {});
+        };
         _ws.onerror = () => _ws.close();
         _ws.onclose = () => {
             cancelAnimationFrame(_rafId); _rafId = null;
@@ -3453,8 +3506,42 @@ const PlayerEarphone = (() => {
     function getAudioDelaySec() { return JITTER_BUF; }
     function syncConsole()      { }
 
+    // ── Sidetone — local mic fed directly into earphone AudioContext ───────────
+    // Routes the DJ's own mic stream into the earphone at 0ms latency (Web Audio
+    // local processing — no server round-trip). Mirrors real console sidetone.
+    // Must be called after _ensureCtx() has created _ctx and _gain.
+    function enableSidetone(micStream) {
+        if (!micStream || !_ctx) return;
+        disableSidetone();   // clean up any previous connection
+        try {
+            _sideSource = _ctx.createMediaStreamSource(micStream);
+            _sideGain   = _ctx.createGain();
+            _sideGain.gain.value = 0.75;   // -2.5 dB — slightly below PGM1 so music isn't masked
+            _sideSource.connect(_sideGain);
+            _sideGain.connect(_gain);      // through earphone volume control
+            _sidetoneOn = true;
+            console.log('[PE] Sidetone enabled — mic self-monitoring active (0ms)');
+        } catch (e) {
+            console.warn('[PE] Sidetone failed:', e.message);
+        }
+    }
+
+    function disableSidetone() {
+        _sidetoneOn = false;
+        if (_sideGain)   { try { _sideGain.disconnect();   } catch (_) {} _sideGain   = null; }
+        if (_sideSource) { try { _sideSource.disconnect(); } catch (_) {} _sideSource = null; }
+    }
+
+    function setSidetoneGain(v) {
+        if (_sideGain && _ctx) _sideGain.gain.setTargetAtTime(
+            Math.max(0, Math.min(1.5, v)), _ctx.currentTime, 0.05);
+    }
+
+    function isSidetoneOn() { return _sidetoneOn; }
+
     return { start, stop, setVolume, getVolume, isActive, flush, resumeCtx,
-             getLevel, getAudioDelaySec, syncConsole };
+             getLevel, getAudioDelaySec, syncConsole,
+             enableSidetone, disableSidetone, setSidetoneGain, isSidetoneOn };
 })();
 
 // ── Browser Monitor — server PGM mix via WebSocket WebM/Opus ─────────────────

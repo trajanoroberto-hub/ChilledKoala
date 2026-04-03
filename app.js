@@ -2682,6 +2682,21 @@ const WA = (() => {
             _chGains[id].gain.setTargetAtTime(gain, _ctx.currentTime, 0.05);
 
             if (ch.type === 'mic') {
+                // ── Sidetone gating: update PlayerEarphone sidetone gain to match ─
+                // Uses the same gain as the capture channel so when CH is OFF/fader=0
+                // the DJ hears silence in the earphone (no bleed). This runs every
+                // syncToConsole() call so ON/OFF/fader changes are instantly reflected.
+                {
+                    let _maxMicGain = 0;
+                    S.console.channels.forEach(c => {
+                        if (c.type === 'mic') {
+                            const g = (c.on && (c.bus === 'pgm' || !c.bus)) ? _taper(c.fader ?? 80) : 0;
+                            if (g > _maxMicGain) _maxMicGain = g;
+                        }
+                    });
+                    PlayerEarphone.setSidetoneGain(_maxMicGain * 0.75);
+                }
+
                 if (!_micNodes[id]) {
                     (async () => {
                         try {
@@ -3324,9 +3339,17 @@ function showToast(msg, type = 'info') {
 const PlayerEarphone = (() => {
     const SR          = 44100;
     const CHANNELS    = 2;
-    const JITTER_BUF  = 0.15;   // 150ms pre-roll — low-latency (Jacktrip-style real-time monitor)
-    const SCHED_AHEAD = 0.08;   // 80ms scheduled ahead = 4× server tick (20ms)
-    const CHUNK_SEC   = 0.040;  // 40ms chunks = 2× server tick — minimises schedule granularity
+    // Adaptive jitter buffer (Jacktrip / Sonobus approach):
+    //   MIN_BUF   — lowest latency target; used when network is stable
+    //   MAX_BUF   — ceiling; never worse than old fixed 700ms path
+    //   SCHED_AHEAD — pre-schedule this far ahead on the AudioContext timeline.
+    //                 Does NOT add latency (audio is already playing by then).
+    //                 Must be > worst-case rAF delay (tab-switch: ~200ms).
+    //   CHUNK_SEC — AudioBuffer size; smaller = finer scheduling granularity
+    const MIN_BUF     = 0.080;   // 80ms (~4 server ticks)
+    const MAX_BUF     = 0.400;   // 400ms ceiling
+    const SCHED_AHEAD = 0.300;   // 300ms lookahead — survives rAF throttle / tab-switch
+    const CHUNK_SEC   = 0.040;   // 40ms chunks = 2× server tick
 
     let _ctx        = null;
     let _gain       = null;
@@ -3338,6 +3361,12 @@ const PlayerEarphone = (() => {
     let _started    = false;
     let _rafId      = null;
     let _queue      = [];       // Float32Array chunks, one per WS frame
+
+    // ── Adaptive jitter buffer state ──────────────────────────────────────────
+    let _targetBuf     = 0.150;  // current target depth (adapts between MIN_BUF..MAX_BUF)
+    let _jitterEWMA    = 0.040;  // EWMA of inter-frame arrival jitter (seconds)
+    let _lastArrivalMs = 0;      // performance.now() at last _enqueue() call
+    let _lastFrame     = null;   // PLC: last scheduled frame (for packet loss concealment)
 
     // ── Sidetone — browser-local mic self-monitoring (0ms, no server round-trip) ─
     let _sideSource = null;     // MediaStreamSource node (mic stream in earphone AudioContext)
@@ -3371,7 +3400,22 @@ const PlayerEarphone = (() => {
             // Count queued samples
             let avail = 0;
             for (const f of _queue) avail += f.length;
-            if (avail === 0) break;
+            if (avail === 0) {
+                // ── Packet Loss Concealment ──────────────────────────────────
+                // Network dropout: instead of hard silence, fade out the last known
+                // audio frame. Eliminates clicks/pops on brief packet gaps.
+                // Only applied once per dropout (then _lastFrame is cleared).
+                if (_lastFrame && (_schedTime - _ctx.currentTime) < 0.060) {
+                    const plc = new Float32Array(_lastFrame.length);
+                    for (let i = 0; i < plc.length; i++) {
+                        // Linear fade from 50% → 0% over the frame duration
+                        plc[i] = _lastFrame[i] * (0.5 * (1 - i / plc.length));
+                    }
+                    _scheduleF32(plc);
+                    _lastFrame = null;   // one PLC frame per dropout, then silence
+                }
+                break;
+            }
 
             // Use full chunk if available, otherwise use whatever we have
             // if schedTime is critically close to currentTime (< 40ms headroom)
@@ -3398,6 +3442,7 @@ const PlayerEarphone = (() => {
     }
 
     function _scheduleF32(f32) {
+        _lastFrame = f32;   // save for Packet Loss Concealment
         const nFrames  = f32.length / CHANNELS;
         const abuf     = _ctx.createBuffer(CHANNELS, nFrames, SR);
         const L = abuf.getChannelData(0);
@@ -3421,18 +3466,43 @@ const PlayerEarphone = (() => {
 
     function _enqueue(abuf) {
         if (!_ctx || !_active) return;
-        // outMix1 is now f64le (Float64, stereo interleaved, values in [-1,+1]).
-        // Convert Float64 → Float32 for Web Audio (which is natively Float32).
+        // outMix1 is f64le (Float64, stereo interleaved, values in [-1,+1]).
+        // Convert Float64 → Float32 for Web Audio (natively Float32).
         const f64  = new Float64Array(abuf);
         const f32  = new Float32Array(f64.length);
         for (let i = 0; i < f64.length; i++) f32[i] = f64[i];
         _queue.push(f32);
 
-        if (!_started && _queuedSecs() >= JITTER_BUF) {
+        // ── Adaptive jitter measurement (Jacktrip / VOIP style) ───────────────
+        // Server sends one frame every 20ms. Measure actual inter-frame arrival
+        // intervals and track variance via EWMA. Grow _targetBuf when jitter is
+        // high; shrink back toward MIN_BUF when the network is stable.
+        const nowMs = performance.now();
+        if (_lastArrivalMs > 0) {
+            const intervalSec = (nowMs - _lastArrivalMs) / 1000;
+            const devSec      = Math.abs(intervalSec - 0.020);   // deviation from 20ms ideal
+            // Very slow adaptation (α=0.03) so occasional outliers don't spike the buffer
+            _jitterEWMA = _jitterEWMA * 0.97 + devSec * 0.03;
+            // Target = 4× jitter + 40ms safety floor, clamped to [MIN_BUF, MAX_BUF]
+            _targetBuf  = Math.max(MIN_BUF, Math.min(MAX_BUF, _jitterEWMA * 4 + 0.040));
+        }
+        _lastArrivalMs = nowMs;
+
+        if (!_started && _queuedSecs() >= _targetBuf) {
             _schedTime = _ctx.currentTime + 0.02;
             _started   = true;
             _rafLoop();
-            console.log('[PE] jitter buffer full (' + JITTER_BUF + 's) — playback started ✓');
+            const ms = Math.round(_targetBuf * 1000);
+            console.log('[PE] jitter buffer full (' + ms + 'ms, jitter≈' +
+                        Math.round(_jitterEWMA * 1000) + 'ms) — playback started ✓');
+            // Auto-calibrate server mic delay to match actual adaptive buffer depth.
+            // Server delays Loc Mic 1/2 in Mix 2 by this ms so DJ voice aligns
+            // with PGM1 music in the Icecast broadcast.
+            fetch('/api/mic-delay', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ ms }),
+            }).catch(() => {});
         }
     }
 
@@ -3440,21 +3510,19 @@ const PlayerEarphone = (() => {
         _ensureCtx();
         if (_ctx.state === 'suspended') await _ctx.resume();
         _schedTime = 0; _started = false; _queue = [];
+        _lastFrame = null; _lastArrivalMs = 0; _targetBuf = 0.150;
         cancelAnimationFrame(_rafId); _rafId = null;
 
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         _ws = new WebSocket(`${proto}://${location.host}/ws/mon`);
         _ws.binaryType = 'arraybuffer';
         _ws.onopen  = () => {
-            console.log('[PE] scheduler active — /ws/mon ✓  jitter=' + JITTER_BUF + 's  (' + Math.round(JITTER_BUF*1000) + 'ms)');
-            // Auto-calibrate server mic delay to match this jitter buffer depth.
-            // Server delays Loc Mic 1/2 in Mix 2 by this amount so DJ voice is
-            // synchronised with PGM1 music in the Icecast broadcast.
-            fetch('/api/mic-delay', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ms: Math.round(JITTER_BUF * 1000) }),
-            }).catch(() => {});
+            // Reset adaptive state on each (re)connect so we re-learn jitter quickly
+            _jitterEWMA    = 0.040;
+            _lastArrivalMs = 0;
+            _targetBuf     = 0.150;   // start conservative, adapts down once measurements arrive
+            console.log('[PE] /ws/mon connected — adaptive jitter buffer [' +
+                        Math.round(MIN_BUF*1000) + '–' + Math.round(MAX_BUF*1000) + 'ms] active');
         };
         _ws.onerror = () => _ws.close();
         _ws.onclose = () => {
@@ -3503,7 +3571,7 @@ const PlayerEarphone = (() => {
         return Math.sqrt(sum / buf.length);
     }
 
-    function getAudioDelaySec() { return JITTER_BUF; }
+    function getAudioDelaySec() { return _targetBuf; }
     function syncConsole()      { }
 
     // ── Sidetone — local mic fed directly into earphone AudioContext ───────────

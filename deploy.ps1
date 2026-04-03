@@ -33,7 +33,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "git push failed." -ForegroundColor Red; e
 
 # ── 4. VPS: git pull + pm2 restart via WinSCP saved session ───────────────────
 Write-Host "--- VPS: git pull + pm2 restart ---" -ForegroundColor Yellow
-& winscp.com /command `
+& 'C:\Program Files (x86)\WinSCP\WinSCP.com' /command `
     "open root@www.gatopretoradio.com.br" `
     "call cd /opt/chilled_koala && git pull && pm2 restart chilled_koala" `
     "exit"

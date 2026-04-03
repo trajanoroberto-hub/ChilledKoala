@@ -414,6 +414,118 @@ function startClock() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   PLAYER PANEL TEMPLATE
+   Single source of truth for Player 1 (ra) and Player 2 (rb) panel HTML.
+   Call buildPlayerPanel('ra') and buildPlayerPanel('rb') at DOMContentLoaded
+   to inject identical structure into #raLeft and #raLeftB respectively.
+   All IDs are derived from the prefix so app.js selectors never need updating.
+═══════════════════════════════════════════════════════════════════════════ */
+function buildPlayerPanel(p) {
+    const isA     = p === 'ra';
+    const cid     = n => `${p}${n}`;               // e.g. 'NowTitle' → 'raNowTitle'
+    const tmp     = isA ? 'tmp'    : 'tmpB';        // track-meta ID prefix
+    const plWrap  = isA ? 'playlistWrap'   : 'playlistBWrap';
+    const plTable = isA ? 'playlistTable'  : 'playlistBTable';
+    const plBody  = isA ? 'playlistBody'   : 'playlistBBody';
+    const clearId = isA ? 'clearPlaylistBtn' : 'clearPlaylistBBtn';
+    const metaId  = isA ? 'trackMetaPanel'  : 'trackMetaPanelB';
+    const emptyMsg = 'Playlist empty — add tracks from the library →';
+
+    const container = document.getElementById(isA ? 'raLeft' : 'raLeftB');
+    if (!container) return;
+
+    container.innerHTML = `
+      <div class="ra-transport">
+
+        <div class="ra-now">
+          <div class="${p}-now-label">ON AIR</div>
+          <div class="ra-now-info">
+            <div id="${cid('NowTitle')}"  class="ra-now-title">–</div>
+            <div id="${cid('NowArtist')}" class="ra-now-artist">–</div>
+          </div>
+          <div class="ra-now-time">
+            <span id="${cid('TimeElapsed')}" class="ra-time-el">0:00</span>
+            <div id="${cid('ProgressBar')}" class="ra-progress">
+              <div id="${cid('ProgressFill')}" class="ra-progress-fill"></div>
+              <div id="${cid('ProgressHead')}" class="ra-progress-head"></div>
+            </div>
+            <span id="${cid('TimeRemain')}" class="ra-time-re">-0:00</span>
+          </div>
+        </div>
+
+        <div class="ra-controls">
+          <button id="${cid('BtnPrev')}"  class="ra-btn" title="Previous track">⏮</button>
+          <button id="${cid('BtnPlay')}"  class="ra-btn ra-btn-play" title="Play / Pause">▶</button>
+          <button id="${cid('BtnStop')}"  class="ra-btn" title="Stop">⏹</button>
+          <button id="${cid('BtnNext')}"  class="ra-btn" title="Next track">⏭</button>
+          <button id="${cid('BtnBreak')}" class="ra-btn ra-btn-break" title="Stop after current track">⏹|</button>
+        </div>
+
+        <div class="ra-cfg">
+          <label class="ra-cfg-lbl">XF</label>
+          <input type="number" id="${cid('Crossfade')}" class="ra-cfg-in"
+                 value="2" min="0" max="30" step="0.5" title="Crossfade (seconds)">
+          <label class="ra-cfg-lbl">s</label>
+          <button id="${clearId}" class="btn-danger-sm" style="margin-left:10px">✕ Clear</button>
+        </div>
+
+      </div>
+
+      <div id="${plWrap}">
+        <table id="${plTable}">
+          <thead>
+            <tr>
+              <th class="col-num">#</th>
+              <th class="col-state">STATE</th>
+              <th class="col-track">ARTIST – TITLE</th>
+              <th class="col-dur">Dur.</th>
+              <th class="col-del"  title="Delete">✕</th>
+              <th class="col-stop" title="Stop after this track">⏹|</th>
+            </tr>
+          </thead>
+          <tbody id="${plBody}">
+            <tr><td colspan="6" class="pl-empty">${emptyMsg}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div id="${metaId}" class="track-meta-panel hidden">
+        <div class="tmp-header">
+          <span class="tmp-icon">♪</span>
+          <span class="tmp-title" id="${tmp}TrackTitle">–</span>
+          <span class="tmp-badge" id="${tmp}Status"></span>
+        </div>
+        <div class="tmp-body">
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">TRACK</div>
+            <div class="tmp-row"><span class="tmp-lbl">Title</span>        <span class="tmp-val tmp-bright" id="${tmp}Title">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Artist</span>       <span class="tmp-val tmp-cyan"   id="${tmp}Artist">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Album Artist</span> <span class="tmp-val"            id="${tmp}AlbumArtist">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Album</span>        <span class="tmp-val"            id="${tmp}Album">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Genre</span>        <span class="tmp-val"            id="${tmp}Genre">–</span></div>
+          </div>
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">NUMBERING</div>
+            <div class="tmp-row"><span class="tmp-lbl">Track №</span>      <span class="tmp-val"            id="${tmp}TrackNum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Disc №</span>       <span class="tmp-val"            id="${tmp}DiscNum">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Date</span>         <span class="tmp-val"            id="${tmp}Date">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Original Date</span><span class="tmp-val"            id="${tmp}OrigDate">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Duration</span>     <span class="tmp-val tmp-amber"  id="${tmp}Duration">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">LUFS</span>         <span class="tmp-val tmp-amber"  id="${tmp}Lufs">–</span></div>
+          </div>
+          <div class="tmp-group">
+            <div class="tmp-group-lbl">GATO PRETO</div>
+            <div class="tmp-row"><span class="tmp-lbl">Album ID</span>     <span class="tmp-val tmp-id"     id="${tmp}AlbumId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Track ID</span>     <span class="tmp-val tmp-id"     id="${tmp}TrackId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Artist ID</span>    <span class="tmp-val tmp-id"     id="${tmp}ArtistId">–</span></div>
+            <div class="tmp-row"><span class="tmp-lbl">Status</span>       <span class="tmp-val"            id="${tmp}GpStatus">–</span></div>
+          </div>
+        </div>
+      </div>
+    `;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    RT — CHANNEL STRIPS
 ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -4312,6 +4424,10 @@ const PlaylistBuilder = (() => {
 })();
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Build both player panels from the shared template before any event binding.
+    buildPlayerPanel('ra');   // → #raLeft   (Player 1)
+    buildPlayerPanel('rb');   // → #raLeftB  (Player 2)
+
     // Bootstrap Web Audio on first user gesture (browser policy requires this).
     // After init, all RA audio routes through the RT PGM bus — not directly to speakers.
     const _initWAOnGesture = () => {

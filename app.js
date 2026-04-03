@@ -176,6 +176,13 @@ function handleMsg(msg) {
             // We are inside the WS 'init' message handler which is triggered by
             // user action (login button click) → AudioContext can be created.
             PlayerEarphone.start();
+            // Sync MON volume immediately after start — _ensureCtx() runs synchronously
+            // inside start() so _gain already exists when setVolume() is called here.
+            // The block in bindEvents() runs at DOMContentLoaded before S.console exists,
+            // so this is the only reliable place to apply the server's stored monitorVolume.
+            if (S.console?.monitorVolume !== undefined) {
+                PlayerEarphone.setVolume(S.console.monitorVolume / 100);
+            }
             _syncMonitorButtons();
             // Start mic path immediately so VU bars are live and DJ can check
             // their mic level before pressing GO LIVE. Awaited so getUserMedia
@@ -238,6 +245,7 @@ function handleMsg(msg) {
         case 'rb:playlist':
             S.playlistB = msg.tracks || [];
             renderPlaylistB();
+            RB.updateUI();   // re-apply .current highlight after rows are rebuilt
             break;
 
         case 'playlistB:updated':
@@ -2682,19 +2690,14 @@ const WA = (() => {
             _chGains[id].gain.setTargetAtTime(gain, _ctx.currentTime, 0.05);
 
             if (ch.type === 'mic') {
-                // ── Sidetone gating: update PlayerEarphone sidetone gain to match ─
-                // Uses the same gain as the capture channel so when CH is OFF/fader=0
-                // the DJ hears silence in the earphone (no bleed). This runs every
-                // syncToConsole() call so ON/OFF/fader changes are instantly reflected.
+                // ── Sidetone gating: mute sidetone when ALL mic channels are OFF ─
+                // Binary gate: fixed 0.75 when any mic is ON, 0 when all are OFF.
+                // Fader position controls broadcast level but NOT sidetone (the MON
+                // Mic button is the sidetone on/off — fader shouldn't silence it).
                 {
-                    let _maxMicGain = 0;
-                    S.console.channels.forEach(c => {
-                        if (c.type === 'mic') {
-                            const g = (c.on && (c.bus === 'pgm' || !c.bus)) ? _taper(c.fader ?? 80) : 0;
-                            if (g > _maxMicGain) _maxMicGain = g;
-                        }
-                    });
-                    PlayerEarphone.setSidetoneGain(_maxMicGain * 0.75);
+                    const _anyMicOn = S.console.channels.some(
+                        c => c.type === 'mic' && c.on);
+                    PlayerEarphone.setSidetoneGain(_anyMicOn ? 0.75 : 0);
                 }
 
                 if (!_micNodes[id]) {

@@ -458,15 +458,17 @@ function syncMixerFromConsole() {
 }
 
 // Sync CUE flags from console channels to mixer.
-// Maps each channel's sourceA → mixerKey, sets flag true if ch.cue is active.
+// Maps each channel's active source → mixerKey, sets flag true if ch.cue is active.
+// Uses activeSource (A or B) to match the same path used by syncConsole() for gain.
 // Called whenever CUE state changes so the mixer outCue bus stays current.
 function _syncCueFlags() {
     const cueMap = {};
     (console_.channels || []).forEach(ch => {
         if (!ch.cue) return;
-        const src = (ch.sourceA || '').toLowerCase();
+        const activeSrc = (ch.activeSource === 'B' ? ch.sourceB : ch.sourceA) || '';
+        const src = activeSrc.toLowerCase();
         if (src) cueMap[src] = true;
-        // Normalise player_1/player_2 → player1/player2
+        // Normalise player_1/player_2 → player1/player2 (mixer internal keys)
         if (src === 'player_1') cueMap['player1'] = true;
         if (src === 'player_2') cueMap['player2'] = true;
     });

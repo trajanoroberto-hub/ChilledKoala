@@ -498,19 +498,25 @@ class AudioMixer extends EventEmitter {
                 this._vuCnt[key] = (this._vuCnt[key] || 0) + vuSamples;
             }
 
-            if (gain === 0) continue;
-
             const inMix1 = AudioMixer.MIX1_KEYS.has(key);
             const inCue  = !!(this._cueFlags?.[key]);   // CUE: pre-fader, unity gain
 
-            for (let i = 0; i < needed; i += 8) {
-                // Read Float64 — no quantisation, full 64-bit precision
-                const sample = chunk.readDoubleLE(i) * gain;
+            // Skip PGM mixing when gain is 0, BUT still process CUE bus.
+            // CUE is pre-fader listen — it must work even when the channel is OFF
+            // or fader is at 0, because the DJ uses CUE to audition a source
+            // before putting it on air.
+            if (gain === 0 && !inCue) continue;
 
-                // Accumulate into float64 scratch arrays (indexed by sample position)
+            for (let i = 0; i < needed; i += 8) {
                 const si = i >> 3;   // sample index (0-based, 8 bytes per float64)
-                _fOut[si]  = (_fOut[si]  || 0) + sample;
-                if (inMix1) _fMix1[si] = (_fMix1[si] || 0) + sample;
+
+                if (gain !== 0) {
+                    // Read Float64 — no quantisation, full 64-bit precision
+                    const sample = chunk.readDoubleLE(i) * gain;
+                    // Accumulate into float64 scratch arrays (indexed by sample position)
+                    _fOut[si]  = (_fOut[si]  || 0) + sample;
+                    if (inMix1) _fMix1[si] = (_fMix1[si] || 0) + sample;
+                }
                 // CUE bus: accumulate raw sample at unity gain (pre-fader listen)
                 if (inCue) {
                     const rawSample = chunk.readDoubleLE(i);

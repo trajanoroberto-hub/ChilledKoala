@@ -3,7 +3,6 @@ sessions/
 *.zip
 old/
 docs/
-deploy.ps1
 config.ini
 .library-cache.json
 *.log

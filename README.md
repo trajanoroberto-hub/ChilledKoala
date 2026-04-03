@@ -1020,11 +1020,12 @@ All runtime settings live here. No hard-coded values in any `.js` file.
 ```ini
 [general]
 port             = 3100
+vps_ip           = 177.136.224.35          # VPS public IP — reference only, not used for connections
 public_url       = https://chilledkoala.gatopretoradio.com.br
 
 [security]
-session_secret   = <openssl rand -hex 32>      # CHANGE ON FRESH INSTALL
-session_timeout  = 28800                        # seconds (8 hours)
+session_secret   = <openssl rand -hex 32>  # CHANGE ON FRESH INSTALL
+session_timeout  = 28800                   # seconds (8 hours)
 
 [paths]
 music_library_path = /mnt/data/azuracast/stations/gato_preto/media/Music
@@ -1036,10 +1037,10 @@ sfx_path           = .../Music/SFX
 [audio]
 crossfade_sec    = 2
 bitrate          = 320
-mic_delay_ms     = 0     # DJ mic delay compensation (ms); 0 = disabled
+mic_delay_ms     = 0     # DJ mic delay compensation (ms); auto-set by browser on connect
 
 [icecast]
-server           = 127.0.0.1
+server           = 127.0.0.1   # same VPS — always localhost
 port             = 80
 mount            = /live
 listener_mount   = /radio.aac1
@@ -1049,17 +1050,17 @@ public_stream_url = https://streams.gatopretoradio.com.br/radio.aac1
 [azuracast]
 station_id       = 1
 docker_container = azuracast
-server           = 127.0.0.1
+server           = 127.0.0.1   # same VPS — always localhost
 port             = 80
 api_key          = "your-azuracast-api-key"
 
 [azuracast_dj]
-server           = <VPS public IP>
+server           = localhost    # same VPS — Liquidsoap DJ port; NEVER use public IP here
 port             = 8005
 mount            = /
 
 [webrtc]
-announced_ip     = <VPS public IP>
+announced_ip     = 177.136.224.35  # MUST be real public IP for WebRTC NAT traversal
 rtp_port_min     = 40000
 rtp_port_max     = 40099
 
@@ -1075,6 +1076,11 @@ ch1_on       = true
 ch1_volume   = 80
 # ... ch2 through ch8 same pattern
 ```
+
+> **Important — localhost vs public IP:**  
+> All services (Chilled Koala, AzuraCast, Liquidsoap, Icecast) run on the same VPS.  
+> Use `localhost`/`127.0.0.1` for every inter-service connection.  
+> Only `[webrtc] announced_ip` must use the real public IP (`177.136.224.35`) so WebRTC NAT traversal works for remote guests and DJs.
 
 **Settings editable from the Web UI:**  
 Music library path, Icecast mount/password, AzuraCast server/API key — saved back to `config.ini` automatically. No manual editing needed after first setup.
@@ -1208,13 +1214,59 @@ Then: AzuraCast → Restart Broadcasting
 
 ---
 
-## 13. Firewall
+## 13. Network & Firewall
+
+### VPS Identity
+
+| Parameter | Value |
+|---|---|
+| **Public IP** | `177.136.224.35` |
+| **VPN internal IP** | `10.11.102.20` |
+| **Domain** | `gatopretoradio.com.br` |
+| **Chilled Koala URL** | `https://chilledkoala.gatopretoradio.com.br` |
+| **Streams URL** | `https://streams.gatopretoradio.com.br/radio.aac1` |
+
+All services — Chilled Koala (Node.js), AzuraCast, Liquidsoap, and Icecast — run on the **same VPS**. All inter-service connections use `localhost` or `127.0.0.1`; the public IP is never used for internal traffic.
+
+### Public ports (open to the internet via 177.136.224.35)
 
 | Protocol | Port | Service |
 |---|---|---|
-| TCP | 3100 | Chilled Koala web app |
-| UDP | 40000–40099 | mediasoup WebRTC (guests + remote DJ) |
-| TCP | 8005 | Liquidsoap source (outbound to AzuraCast) |
+| TCP | 80 | HTTP (redirects to HTTPS) |
+| TCP | 443 | HTTPS — Chilled Koala web app + AzuraCast + Icecast streams |
+
+All other ports are **closed** to the public internet.
+
+### Engineering access (VPN required)
+
+Engineers connect to the VPS via **VPN** first, then use the internal IP `10.11.102.20`. This exposes all internal ports without touching the public firewall:
+
+| Protocol | Port | Service |
+|---|---|---|
+| TCP | 3100 | Chilled Koala Node.js app (direct, no reverse proxy) |
+| TCP | 8005 | Liquidsoap DJ source input (AzuraCast) |
+| TCP | 22 | SSH |
+| TCP | 2022 | AzuraCast SFTP |
+| TCP | 6010 | AzuraCast internal API (docker) |
+| UDP | 40000–40099 | mediasoup WebRTC RTP (guests + remote DJ) |
+
+### VPN connection
+
+Connect to VPN → then SSH / access services via internal IP:
+
+```bash
+# SSH (after VPN connected)
+ssh root@10.11.102.20
+
+# WinSCP saved session (via VPN internal IP)
+open root@www.gatopretoradio.com.br   # resolves to 10.11.102.20 via VPN
+
+# Verify Chilled Koala build (from inside VPN or VPS)
+curl -s http://10.11.102.20:3100/api/health | grep build
+
+# Restart Liquidsoap if DJ source hangs
+docker exec azuracast supervisorctl restart station_1:station_1_backend
+```
 
 ---
 
@@ -1265,6 +1317,19 @@ Then: AzuraCast → Restart Broadcasting
 | 377 | AzuraCast playlist contents viewer + folder removal |
 | 378 | Playlist folder management via direct DB (view/add/delete) |
 | 379 | GitHub Actions deploy workflow; deploy.ps1 → git push |
+| 379 | Low-latency MON (adaptive jitter buffer 80–400 ms, Jacktrip-style) |
+| 379 | Sidetone: Loc Mic 1/2 → earphone at 0 ms (no server round-trip) |
+| 379 | MON Mic toggle button (amber when active) |
+| 380 | Sidetone gated by Loc Mic ON/OFF state (was always audible) |
+| 380 | SCHED_AHEAD 80 ms → 300 ms (fixes audio gaps on tab-switch/rAF throttle) |
+| 380 | Adaptive jitter buffer replaces fixed 700 ms pre-buffer |
+| 380 | Packet Loss Concealment (PLC) — 50 %→0 % fade on dropout instead of hard silence |
+| 381 | Sidetone gain: fader-proportional → binary ON/OFF (fader=0 was silencing sidetone) |
+| 381 | CUE flags: use activeSource (A or B) not always sourceA |
+| 381 | MON volume: apply server monitorVolume on WS init (was stuck at 0.80 default) |
+| 382 | CUE bus silent when channel OFF: `gain===0 continue` skipped CUE accumulation |
+| 382 | Player 2 active track highlight lost after playlist re-render fixed |
+| 382 | deploy.ps1 added to git; WinSCP full path set |
 
 ---
 

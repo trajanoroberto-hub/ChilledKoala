@@ -69,8 +69,10 @@ html, body {
 .logo-ver  {
   font-family: var(--mono); font-size: 10px; color: var(--blue2);
   background: rgba(41,151,255,.12); border: 1px solid rgba(41,151,255,.25);
-  padding: 2px 7px; border-radius: 100px; letter-spacing: .3px;
+  padding: 3px 7px; border-radius: 8px; letter-spacing: .3px;
+  display: inline-flex; flex-direction: column; align-items: center; line-height: 1.4;
 }
+.logo-build { font-size: 9px; opacity: 0.7; letter-spacing: .2px; }
 .logo-sub-wrap { display: flex; flex-direction: column; gap: 0px; }
 .logo-sub  { font-size: 14px; color: var(--text2); letter-spacing: 0; font-weight: 500; }
 .logo-copy { font-size: 12px; color: var(--text2); letter-spacing: 0; font-weight: 500; }
@@ -613,28 +615,28 @@ html, body {
 .np-title  { font-size: 14px; font-weight: 700; color: var(--green2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-artist { font-size: 12px; color: var(--green2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .np-meta   { font-family: var(--mono); font-size: 9px; color: var(--text3); line-height: 1.7; white-space: pre-wrap; }
-#playlistWrap { flex: 1; overflow-y: auto; }
-#playlistTable { table-layout: fixed; width: 100%; border-collapse: collapse; }
-#playlistTable thead th { background: var(--bg1); border-bottom: 2px solid var(--bdr2); color: var(--text2); font-size: 12px; font-weight: 800; letter-spacing: .5px; padding: 7px 10px; position: sticky; top: 0; text-align: left; z-index: 2; font-family: var(--mono); }
-#playlistTable tbody tr { border-bottom: 1px solid var(--bdr); cursor: default; transition: background .1s; }
-#playlistTable tbody tr:hover { background: var(--bg3); }
-#playlistTable tbody tr.current { background: rgba(34,197,94,.07); border-left: 3px solid var(--green2); }
-#playlistTable tbody tr.has-stop { border-bottom: 2px solid var(--red); }
+.player-pl-wrap { flex: 1; overflow-y: auto; }
+.player-pl-table { table-layout: fixed; width: 100%; border-collapse: collapse; }
+.player-pl-table thead th { background: var(--bg1); border-bottom: 2px solid var(--bdr2); color: var(--text2); font-size: 12px; font-weight: 800; letter-spacing: .5px; padding: 7px 10px; position: sticky; top: 0; text-align: left; z-index: 2; font-family: var(--mono); }
+.player-pl-table tbody tr { border-bottom: 1px solid var(--bdr); cursor: default; transition: background .1s; }
+.player-pl-table tbody tr:hover { background: var(--bg3); }
+.player-pl-table tbody tr.current { background: rgba(34,197,94,.07); border-left: 3px solid var(--green2); }
+.player-pl-table tbody tr.has-stop { border-bottom: 2px solid var(--red); }
 /* Track state rows — RadioBOSS colour model */
-#playlistBody tr.trk-state-played  { opacity: .38; }
-#playlistBody tr.trk-state-playing { background: rgba(52,199,89,.10); border-left: 3px solid var(--green) !important; }
-#playlistBody tr.trk-state-mixing  { background: rgba(255,159,10,.12); border-left: 3px solid var(--amber) !important; }
-#playlistBody tr.trk-state-next    { background: rgba(0,113,227,.10); border-left: 3px solid var(--blue) !important; }
-#playlistBody tr.trk-state-queued  { }
-#playlistBody tr:not(.trk-state-played):hover { background: rgba(255,255,255,.04); cursor: pointer; }
-#playlistBody tr.trk-state-playing { cursor: default; }
+.player-pl-body tr.trk-state-played  { opacity: .38; }
+.player-pl-body tr.trk-state-playing { background: rgba(52,199,89,.10); border-left: 3px solid var(--green) !important; }
+.player-pl-body tr.trk-state-mixing  { background: rgba(255,159,10,.12); border-left: 3px solid var(--amber) !important; }
+.player-pl-body tr.trk-state-next    { background: rgba(0,113,227,.10); border-left: 3px solid var(--blue) !important; }
+.player-pl-body tr.trk-state-queued  { }
+.player-pl-body tr:not(.trk-state-played):hover { background: rgba(255,255,255,.04); cursor: pointer; }
+.player-pl-body tr.trk-state-playing { cursor: default; }
 .col-track { overflow: hidden; max-width: 0; width: 100%; }
 .trk-main { display: flex; gap: 0; align-items: baseline; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trk-file { font-size: 9px; color: var(--text3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .btn-stop-mark        { background: none; border: 1px solid var(--bdr2); border-radius: 3px; color: var(--text3); cursor: pointer; font-size: 11px; padding: 1px 5px; }
 .btn-stop-mark.active { background: var(--red, #f87171); color: #fff; border-color: var(--red, #f87171); }
 .btn-stop-mark:hover  { border-color: var(--text2); color: var(--text); }
-#playlistTable td { font-size: 13px; padding: 8px 10px; vertical-align: middle; font-family: var(--mono); }
+.player-pl-table td { font-size: 13px; padding: 8px 10px; vertical-align: middle; font-family: var(--mono); }
 .col-num   { width: 32px; font-family: var(--mono); font-size: 10px; color: var(--text3); }
 .col-state { width: 62px; white-space: nowrap; }
 
@@ -664,9 +666,9 @@ html, body {
 .trk-sep    { color: var(--text3); margin: 0 4px; }
 .trk-title  { color: var(--text); font-weight: 500; }
 /* Playing track row: artist + title both green */
-#playlistBody tr.trk-state-playing .trk-artist,
-#playlistBody tr.trk-state-playing .trk-title { color: var(--green2); font-weight: 600; }
-#playlistBody tr.trk-state-playing .trk-sep   { color: var(--green2); opacity: .5; }
+.player-pl-body tr.trk-state-playing .trk-artist,
+.player-pl-body tr.trk-state-playing .trk-title { color: var(--green2); font-weight: 600; }
+.player-pl-body tr.trk-state-playing .trk-sep   { color: var(--green2); opacity: .5; }
 .btn-del, .btn-stop { background: none; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; padding: 2px 4px; transition: .1s; }
 .btn-del        { color: var(--text3); }
 .btn-del:hover  { color: var(--red2); background: rgba(220,38,38,.1); }

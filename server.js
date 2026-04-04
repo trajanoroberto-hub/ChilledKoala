@@ -2226,8 +2226,9 @@ app.get('/', (req, res) => {
     const build = BUILD;
     try {
         let html = require('fs').readFileSync(path.join(__dirname, 'index.html'), 'utf8');
-        html = html.replace(/app\.js\?v=\d+/g,   `app.js?v=${build}`);
+        html = html.replace(/app\.js\?v=\d+/g,    `app.js?v=${build}`);
         html = html.replace(/style\.css\?v=\d+/g, `style.css?v=${build}`);
+        html = html.replace(/\{\{BUILD\}\}/g,      String(build));
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
     } catch (e) {

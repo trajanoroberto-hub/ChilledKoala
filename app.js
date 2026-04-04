@@ -471,8 +471,8 @@ function buildPlayerPanel(p) {
 
       </div>
 
-      <div id="${plWrap}">
-        <table id="${plTable}">
+      <div id="${plWrap}" class="player-pl-wrap">
+        <table id="${plTable}" class="player-pl-table">
           <thead>
             <tr>
               <th class="col-num">#</th>
@@ -483,7 +483,7 @@ function buildPlayerPanel(p) {
               <th class="col-stop" title="Stop after this track">⏹|</th>
             </tr>
           </thead>
-          <tbody id="${plBody}">
+          <tbody id="${plBody}" class="player-pl-body">
             <tr><td colspan="6" class="pl-empty">${emptyMsg}</td></tr>
           </tbody>
         </table>

@@ -194,9 +194,8 @@ class BroadcastConsole extends EventEmitter {
 
     setMonitor(source, volume) {
         if (source !== undefined) {
-            // Accept legacy 'pgm'/'offair' and new 'pgm1'/'cue'
-            // pgm2 excluded: PGM2 = PGM1 + Loc Mics — hearing own voice at 880ms delay
-            const valid = ['pgm', 'pgm1', 'cue', 'offair'];
+            // Accept legacy 'pgm'/'offair' and current 'pgm1'/'pgm2'/'cue'
+            const valid = ['pgm', 'pgm1', 'pgm2', 'cue', 'offair'];
             if (valid.includes(source)) {
                 // Normalise legacy 'pgm' → 'pgm1'
                 this.monitorSource = source === 'pgm' ? 'pgm1' : source;

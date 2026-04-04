@@ -1,7 +1,7 @@
 {
   "name": "chilled_koala",
   "version": "2.0.0",
-  "build": 387,
+  "build": 388,
   "description": "Stream Ecosystem for AzuraCast",
   "main": "server.js",
   "scripts": {

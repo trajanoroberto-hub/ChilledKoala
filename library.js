@@ -71,9 +71,14 @@ class MusicLibrary {
                 return false;
             }
 
-            this.index   = data.index || [];
+            // Deduplicate by path — guards against a cache built with the old bug
+            const raw  = data.index || [];
+            const seen = new Set();
+            this.index = raw.filter(t => t.path && !seen.has(t.path) && seen.add(t.path));
             this.indexed = true;
             this._sortedCache = {};
+            const dupes = raw.length - this.index.length;
+            if (dupes > 0) console.warn(`⚠ Library cache had ${dupes} duplicate path(s) — filtered on load`);
             console.log(`✓ Library cache loaded: ${this.index.length} tracks (schema ${CACHE_SCHEMA})`);
             return true;
         } catch (err) {
@@ -144,7 +149,7 @@ class MusicLibrary {
     // Phase 2: parallel parseFile() with concurrency=8 — ~8x faster than serial.
     // onProgress fired immediately on start, then every 50 tracks.
 
-    async _collectPaths(dir, paths) {
+    async _collectPaths(dir, paths, seen) {
         let entries;
         try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
         catch (_) { return; }
@@ -154,9 +159,13 @@ class MusicLibrary {
             if (e.isDirectory()) {
                 const low = e.name.toLowerCase();
                 if (low === 'cart' || low === 'sfx') continue;
-                await this._collectPaths(full, paths);
+                await this._collectPaths(full, paths, seen);
             } else if (e.isFile() && path.extname(e.name).toLowerCase() === '.flac') {
-                paths.push(full);
+                // Guard against hardlinks / symlinks resolving to the same inode
+                if (!seen.has(full)) {
+                    seen.add(full);
+                    paths.push(full);
+                }
             }
         }
     }
@@ -164,7 +173,7 @@ class MusicLibrary {
     async _walkDir(dir, results, onProgress) {
         // Phase 1: collect all FLAC paths (fast — no metadata I/O)
         const paths = [];
-        await this._collectPaths(dir, paths);
+        await this._collectPaths(dir, paths, new Set());
         if (onProgress) onProgress(0);   // signal alive immediately after directory walk
 
         // Phase 2: read metadata in parallel, concurrency=8

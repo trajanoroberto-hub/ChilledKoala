@@ -2317,7 +2317,9 @@ function openGoLiveModal() {
         const srv = qs('#goLiveDJServer');
         if (srv) {
             const dj = cfg.azuracast_dj || {};
-            srv.textContent = `${dj.server || '?'}:${dj.port || 8005}${dj.mount || '/'}`;
+            const host = dj.server || '?';
+            const displayHost = (host === 'localhost' || host === '127.0.0.1') ? 'AzuraCast (local)' : host;
+            srv.textContent = `${displayHost}:${dj.port || 8005}${dj.mount || '/'}`;
         }
     }).catch(() => {});
 
@@ -2823,8 +2825,8 @@ const WA = (() => {
                                     _micStreamPromise = navigator.mediaDevices.getUserMedia({
                                         audio: {
                                             echoCancellation:   true,
-                                            noiseSuppression:   false,
-                                            autoGainControl:    false,
+                                            noiseSuppression:   true,
+                                            autoGainControl:    true,
                                             channelCount:       1,
                                             sampleRate:         48000,
                                         },

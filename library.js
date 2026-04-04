@@ -72,12 +72,12 @@ class MusicLibrary {
             }
 
             // Deduplicate by path — guards against a cache built with the old bug
-            const raw  = data.index || [];
+            const entries = data.index || [];
             const seen = new Set();
-            this.index = raw.filter(t => t.path && !seen.has(t.path) && seen.add(t.path));
+            this.index = entries.filter(t => t.path && !seen.has(t.path) && seen.add(t.path));
             this.indexed = true;
             this._sortedCache = {};
-            const dupes = raw.length - this.index.length;
+            const dupes = entries.length - this.index.length;
             if (dupes > 0) console.warn(`⚠ Library cache had ${dupes} duplicate path(s) — filtered on load`);
             console.log(`✓ Library cache loaded: ${this.index.length} tracks (schema ${CACHE_SCHEMA})`);
             return true;

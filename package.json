@@ -1,7 +1,7 @@
 {
   "name": "chilled_koala",
   "version": "2.0.0",
-  "build": 398,
+  "build": 399,
   "description": "Stream Ecosystem for AzuraCast",
   "main": "server.js",
   "scripts": {
@@ -22,7 +22,8 @@
     "ws": "^8.14.2",
     "mediasoup": "^3.14.0",
     "mediasoup-client": "^3.6.0",
-    "opusscript": "^0.1.1"
+    "opusscript": "^0.1.1",
+    "better-sqlite3": "^9.4.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

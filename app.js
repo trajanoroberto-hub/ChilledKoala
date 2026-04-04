@@ -203,21 +203,31 @@ function handleMsg(msg) {
         case 'stream:started':
             startMicCapture().catch(e => console.warn('[stream:started] startMicCapture error:', e.message));
             S.stream = msg.status || S.stream;
+            S.stream.dropped = false;   // clear any prior dropped state on successful (re)connect
             updateStreamUI();
             break;
         case 'stream:stopped':
-        case 'stream:dropped':
             stopMicCapture();
             updateMetaBar(null);
             updateRTProgress(0, 0, false, false, true, null);
-            // Note: Monitor keeps running — it plays /api/monitor (RT PGM), not Icecast.
-            // DJ earphone reflects the live mix regardless of GO LIVE state.
             S.stream = msg.status || S.stream;
+            S.stream.dropped = false;   // explicit DJ stop — not a fault
             updateStreamUI();
+            break;
+        case 'stream:dropped':
+            // Liquidsoap connection lost — mixer is auto-reconnecting.
+            // Keep mic capture running: on reconnect, server will replay stream:started.
+            updateMetaBar(null);
+            updateRTProgress(0, 0, false, false, true, null);
+            S.stream = msg.status || S.stream;
+            S.stream.dropped = true;
+            updateStreamUI();
+            showToast('Liquidsoap connection dropped — reconnecting…', 'warn');
             break;
         case 'stream:error':
             stopMicCapture();
             if (msg.status) S.stream = msg.status;
+            S.stream.dropped = false;
             updateStreamUI();
             showToast(`Stream error: ${msg.error || 'Connection failed — check DJ credentials and Liquidsoap'}`, 'error');
             break;
@@ -1191,6 +1201,12 @@ function updateStreamUI() {
         badge.className = 'badge badge-conn'; badge.textContent = '● CONNECTING';
         btn.className   = 'btn-golive connecting'; btn.textContent = '… CONNECTING';
         if (encSt) encSt.textContent = 'connecting…';
+    } else if (st.dropped) {
+        // Liquidsoap TCP link dropped — server is auto-reconnecting.
+        // Distinct amber badge so DJ knows broadcast is interrupted but recovery is in progress.
+        badge.className = 'badge badge-drop'; badge.textContent = '● DROPPED — RECONNECTING';
+        btn.className   = 'btn-golive connecting'; btn.textContent = '… RECONNECTING';
+        if (encSt) encSt.textContent = 'reconnecting…';
     } else {
         badge.className = 'badge badge-off'; badge.textContent = '● OFFLINE';
         btn.className   = 'btn-golive';       btn.textContent   = '▶ GO LIVE';
@@ -2898,35 +2914,7 @@ const WA = (() => {
     function getCtx()    { return _ctx; }
     function ensureCtx() { _ensureCtx(); return _ctx; }
 
-    // Return the raw getUserMedia stream so DJMicRTC can produce a WebRTC track from it.
-    // The mic stream is shared — one getUserMedia call, two consumers:
-    //   1. Web Audio graph (self-monitor, 0ms)
-    //   2. DJMicRTC (WebRTC producer → server, ~30-80ms)
     function getMicStream() { return _micStream; }
-
-    // Called by DJMicRTC when WebRTC pipeline is live.
-    // Disconnects mic gain nodes from _pgmBus so they no longer flow into MediaRecorder.
-    // (Mic channels have no _ctx.destination connection — see syncToConsole comment.)
-    function disableMicCapture() {
-        if (!_ctx || !_pgmBus) return;
-        Object.values(_chGains).forEach(gain => {
-            try { gain.disconnect(_pgmBus); } catch (_) {}
-        });
-        console.log('[WA] Mic disconnected from PGM bus (WebRTC path active)');
-    }
-
-    // Re-enable mic → PGM bus if WebRTC drops and MediaRecorder fallback is needed.
-    function enableMicCapture() {
-        if (!_ctx || !_pgmBus) return;
-        S.console?.channels?.forEach(ch => {
-            if (ch.type !== 'mic') return;
-            const gain = _chGains[ch.id];
-            if (gain) {
-                try { gain.connect(_pgmBus); } catch (_) {}
-            }
-        });
-        console.log('[WA] Mic reconnected to PGM bus (MediaRecorder fallback)');
-    }
 
     function startCapture() {
         if (_streaming) return;
@@ -3023,180 +3011,9 @@ const WA = (() => {
         console.log('[WA] Capture stopped');
     }
 
-    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, getMicLevel, disableMicCapture, enableMicCapture };
+    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, getMicLevel };
 })();
 
-// ── DJMicRTC — WebRTC mic path for minimum latency ───────────────────────────
-//
-// REPLACES: MediaRecorder → WebSocket (250ms chunks, ~270-320ms to VPS)
-// WITH:     mediasoup-client → WebRTC Opus/UDP (~30-80ms to VPS)
-//
-// HOW IT WORKS:
-//   1. startMicCapture() calls DJMicRTC.start() first.
-//   2. DJMicRTC opens /ws/djm, loads mediasoup-client, negotiates WebRTC.
-//   3. On server 'djmic:active': WA.disableMicCapture() stops MediaRecorder
-//      sending mic — the WebRTC path is now carrying the mic to the server.
-//   4. Web Audio self-monitor (mic → _chGains → _ctx.destination) is UNCHANGED.
-//      The DJ still hears themselves at 0ms regardless of which transport is used.
-//
-// FALLBACK:
-//   If WebRTC fails at any step, DJMicRTC.stop() is called and MediaRecorder
-//   continues as normal. The DJ is notified via a console warning. Broadcast
-//   continues uninterrupted.
-//
-// LATENCY IMPROVEMENT:
-//   MediaRecorder path:   mic → 250ms chunk → WS → FFmpeg decode → PCM mix bus
-//                         = ~270-320ms
-//   WebRTC path:          mic → Opus 20ms → UDP/SRTP → mediasoup → FFmpeg RTP
-//                         = ~30-80ms
-//   Improvement:          4-8× lower latency on PCM mix bus.
-
-const DJMicRTC = (() => {
-    let _ws        = null;
-    let _device    = null;
-    let _transport = null;
-    let _producer  = null;
-    let _active    = false;
-    let _pending   = {};
-
-    function _rpc(type, payload) {
-        return new Promise((res, rej) => {
-            _pending[type] = { res, rej };
-            _send(type, payload);
-            setTimeout(() => {
-                if (_pending[type]) { delete _pending[type]; rej(new Error('RPC timeout: ' + type)); }
-            }, 10000);
-        });
-    }
-
-    function _send(type, payload) {
-        if (_ws?.readyState === WebSocket.OPEN)
-            _ws.send(JSON.stringify({ type, payload: payload || {} }));
-    }
-
-    function _resolve(type, payload) {
-        if (_pending[type]) {
-            const p = _pending[type];
-            delete _pending[type];
-            if (payload?.error) p.rej(new Error(payload.error));
-            else p.res(payload);
-        }
-    }
-
-    async function _loadMediasoupClient() {
-        return new Promise((res, rej) => {
-            if (window.mediasoupClient) return res(window.mediasoupClient);
-            const s = document.createElement('script');
-            s.src     = '/mediasoup-client.js';
-            s.onload  = () => res(window.mediasoupClient);
-            s.onerror = () => rej(new Error('Failed to load mediasoup-client.js'));
-            document.head.appendChild(s);
-        });
-    }
-
-    async function start(micStream) {
-        if (_active) return;
-        _active = true;
-
-        let msc;
-        try {
-            msc = await _loadMediasoupClient();
-        } catch (e) {
-            console.warn('[DJMicRTC] mediasoup-client load failed:', e.message, '— falling back to MediaRecorder');
-            _active = false;
-            return;
-        }
-
-        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-        _ws = new WebSocket(`${proto}://${location.host}/ws/djm`);
-
-        _ws.onclose = () => {
-            if (_active) {
-                console.warn('[DJMicRTC] WS closed — falling back to MediaRecorder');
-                _active = false;
-                WA.enableMicCapture(); // re-enable MediaRecorder if WebRTC drops
-            }
-        };
-        _ws.onerror = () => _ws.close();
-
-        await new Promise((res, rej) => {
-            _ws.onopen = res;
-            setTimeout(() => rej(new Error('WS open timeout')), 5000);
-        }).catch(e => { throw e; });
-
-        _ws.onmessage = async (ev) => {
-            const msg = JSON.parse(ev.data);
-            const { type, payload } = msg;
-
-            // Resolve pending RPCs
-            _resolve(type, payload);
-
-            if (type === 'djmic:active') {
-                // WebRTC pipeline live — disable MediaRecorder mic capture
-                WA.disableMicCapture();
-                console.log('[DJMicRTC] WebRTC active — MediaRecorder mic disabled');
-            }
-        };
-
-        try {
-            // Negotiate mediasoup WebRTC
-            _device = new msc.Device();
-            const caps = await _rpc('djmic:rtpCapabilities', {});
-            await _device.load({ routerRtpCapabilities: caps });
-
-            const tParams  = await _rpc('djmic:createTransport', {});
-            _transport = _device.createSendTransport(tParams);
-
-            _transport.on('connect', async ({ dtlsParameters }, cb, eb) => {
-                try { await _rpc('djmic:connectTransport', { dtlsParameters }); cb(); }
-                catch (e) { eb(e); }
-            });
-
-            _transport.on('produce', async ({ kind, rtpParameters }, cb, eb) => {
-                try {
-                    const { producerId } = await _rpc('djmic:produce', { kind, rtpParameters });
-                    cb({ id: producerId });
-                } catch (e) { eb(e); }
-            });
-
-            const track = micStream.getAudioTracks()[0];
-            if (!track) throw new Error('No audio track in mic stream');
-            // Disable DTX (Discontinuous Transmission) — DTX sends silence/comfort-noise
-            // packets when no voice detected, causing near-zero PCM on the server even
-            // when the mic has a strong signal. Without DTX, every frame is encoded.
-            _producer = await _transport.produce({
-                track,
-                codecOptions: { opusDtx: false, opusFec: true },
-            });
-
-            console.log('[DJMicRTC] WebRTC producer live — ultra-low latency mic active');
-        } catch (e) {
-            console.warn('[DJMicRTC] WebRTC negotiation failed:', e.message, '— MediaRecorder continues');
-            _active = false;
-            try { _ws?.close(); } catch (_) {}
-        }
-    }
-
-    function stop() {
-        _active = false;
-        try { _producer?.close(); }  catch (_) {}
-        try { _transport?.close(); } catch (_) {}
-        try { _ws?.close(); }        catch (_) {}
-        _ws = _device = _transport = _producer = null;
-        _pending = {};
-        console.log('[DJMicRTC] stopped');
-    }
-
-    function isActive() { return _active; }
-
-    return { start, stop, isActive };
-})();
-
-// ── Updated mic capture — WebRTC first, MediaRecorder fallback ────────────────
-
-// Override WA capture functions to integrate DJMicRTC
-// WA.disableMicCapture() / WA.enableMicCapture() allow DJMicRTC to gate the
-// MediaRecorder without stopping the full PGM capture.
 
 // Single source of truth for monitor panel button state.
 // Always reflects PlayerEarphone.isActive() — not Monitor (Opus WebM) state.
@@ -3232,10 +3049,9 @@ function _syncMonMicVisibility() {
 }
 
 // startMicCapture — called at login ('init') and on stream:started.
-// Explicitly acquires getUserMedia HERE (inside the user-gesture call chain)
-// before handing off to WA.startCapture() and DJMicRTC.start().
-// This prevents the race where syncToConsole() fires getUserMedia async
-// after MediaRecorder has already started (recording silence).
+// Acquires getUserMedia here (inside the user-gesture call chain) before
+// WA.startCapture() to prevent the race where MediaRecorder starts before
+// the mic track is connected to _pgmBus → _streamDest (records silence).
 async function startMicCapture() {
     // Step 1: ensure AudioContext and mic permission are obtained NOW,
     // while we are still in the user-gesture call stack (login → WS init).
@@ -3270,19 +3086,10 @@ async function startMicCapture() {
         _syncSidetoneBtn();
     }
 
-    // Step 4: WebRTC mic path DISABLED for local DJ mic.
-    // The WebRTC → mediasoup → PlainTransport → FFmpeg RTP decode chain loses
-    // ~17dB compared to the MediaRecorder path, even with DTX disabled and
-    // Chrome AGC off. MediaRecorder WebM/Opus → WebSocket → FFmpeg WebM decode
-    // is simpler, more reliable, and delivers full signal level.
-    // WebRTC is kept for GUEST callers (remote, needs low-latency UDP).
-    // Local DJ mic uses MediaRecorder — it has only ~80ms more latency than
-    // WebRTC, and the DJ hears themselves at 0ms via Web Audio locally anyway.
-    console.log('[startMicCapture] MediaRecorder path active (WebRTC DJ mic disabled for local mic)');
+    console.log('[startMicCapture] AudioWorklet/MediaRecorder path active');
 }
 
 function stopMicCapture() {
-    DJMicRTC.stop();
     WA.stopCapture();
 }
 

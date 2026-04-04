@@ -83,6 +83,7 @@ html, body {
 .badge-off  { background: rgba(72,80,96,.2); color: var(--text3); border: 1px solid var(--bdr); }
 .badge-conn { background: rgba(217,119,6,.15); color: var(--amber2); border: 1px solid var(--amber); animation: pulseBadge 1s ease-in-out infinite; }
 .badge-live { background: rgba(220,38,38,.18); color: var(--red2); border: 1px solid var(--red); animation: pulseBadge 1.2s ease-in-out infinite; }
+.badge-drop { background: rgba(234,88,12,.18); color: #fdba74; border: 1px solid rgba(234,88,12,.5); animation: pulseBadge .7s ease-in-out infinite; }
 @keyframes pulseBadge { 0%,100%{opacity:1} 50%{opacity:.5} }
 .clock { font-family: var(--mono); font-size: 16px; font-weight: 600; color: var(--text); min-width: 72px; text-align: center; letter-spacing: 1.5px; opacity: .9; }
 .user-tag { font-family: var(--ui); font-size: 13px; font-weight: 500; color: var(--text2); background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); padding: 4px 12px; border-radius: 100px; }

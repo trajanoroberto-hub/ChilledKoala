@@ -3651,16 +3651,21 @@ const PlayerEarphone = (() => {
             _schedTime = _ctx.currentTime + 0.02;
             _started   = true;
             _rafLoop();
-            const ms = Math.round(_targetBuf * 1000);
-            console.log('[PE] jitter buffer full (' + ms + 'ms, jitter≈' +
-                        Math.round(_jitterEWMA * 1000) + 'ms) — playback started ✓');
-            // Auto-calibrate server mic delay to match actual adaptive buffer depth.
-            // Server delays Loc Mic 1/2 in Mix 2 by this ms so DJ voice aligns
+            const bufMs   = Math.round(_targetBuf * 1000);
+            const totalMs = Math.round(getAudioDelaySec() * 1000);
+            console.log('[PE] jitter buffer full (' + bufMs + 'ms buf + ' +
+                        Math.round(SCHED_AHEAD * 1000) + 'ms sched + ' +
+                        Math.round((_ctx?.baseLatency || 0) * 1000) + 'ms hw' +
+                        ' = ' + totalMs + 'ms total earphone latency' +
+                        ', jitter≈' + Math.round(_jitterEWMA * 1000) + 'ms) — playback started ✓');
+            // Auto-calibrate server mic delay to full earphone pipeline latency:
+            //   _targetBuf + SCHED_AHEAD + ctx.baseLatency
+            // Server delays encoder output by this ms so DJ voice aligns
             // with PGM1 music in the Icecast broadcast.
             fetch('/api/mic-delay', {
                 method:  'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body:    JSON.stringify({ ms }),
+                body:    JSON.stringify({ ms: totalMs }),
             }).catch(() => {});
         }
     }
@@ -3730,7 +3735,16 @@ const PlayerEarphone = (() => {
         return Math.sqrt(sum / buf.length);
     }
 
-    function getAudioDelaySec() { return _targetBuf; }
+    // Total earphone pipeline latency (seconds):
+    //   _targetBuf   — frames waiting in the queue (adaptive jitter buffer)
+    //   SCHED_AHEAD  — audio scheduled this far ahead on AudioContext timeline;
+    //                  in steady state _schedTime ≈ ctx.currentTime + SCHED_AHEAD,
+    //                  so the frame dequeued NOW plays SCHED_AHEAD seconds later
+    //   baseLatency  — AudioContext hardware output latency (~10ms)
+    // Used by track-position display and auto-calibration of server mic delay.
+    function getAudioDelaySec() {
+        return _targetBuf + SCHED_AHEAD + (_ctx ? (_ctx.baseLatency || 0) : 0);
+    }
     function syncConsole()      { }
 
     // ── Sidetone — local mic fed directly into earphone AudioContext ───────────

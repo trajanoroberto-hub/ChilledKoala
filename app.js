@@ -1566,10 +1566,16 @@ function renderLibResults(tracks) {
         const btnAdd  = el('button', { className: 'btn-add',  textContent: '+ END',  title: 'Add to end of playlist' });
         const btnNext = el('button', { className: 'btn-next', textContent: '↑ NEXT', title: 'Insert after current track' });
         btnAdd.addEventListener('click',  () => {
+            if (btnAdd.disabled) return;
+            btnAdd.disabled = true;
+            setTimeout(() => { btnAdd.disabled = false; }, 800);
             const evt = S.libraryTarget === 'b' ? 'playlistB:add'        : 'playlist:add';
             send(evt, { path: t.path, title: t.title, artist: t.artist, duration: t.duration });
         });
         btnNext.addEventListener('click', () => {
+            if (btnNext.disabled) return;
+            btnNext.disabled = true;
+            setTimeout(() => { btnNext.disabled = false; }, 800);
             const evt = S.libraryTarget === 'b' ? 'playlistB:insertNext' : 'playlist:insertNext';
             send(evt, { path: t.path, title: t.title, artist: t.artist, duration: t.duration });
         });

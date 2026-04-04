@@ -122,6 +122,14 @@ class ServerPlayer extends EventEmitter {
         this._procB = null;
         clearInterval(this._progTimer);
 
+        // Clear stale audio from the mixer buffer before resetting byte counters.
+        // Without this, old-track bytes still draining from the buffer inflate
+        // _bytesConsumed for the NEW track, causing _waitDrain to fire prematurely
+        // and cut the tail of the new track short.
+        if (this._mixer && this._mixerBufKey) {
+            this._mixer._bufs[this._mixerBufKey] = Buffer.alloc(0);
+        }
+
         if (!track?.path) { this._playing = false; return; }
 
         this._track        = track;
@@ -159,7 +167,10 @@ class ServerPlayer extends EventEmitter {
         this._pausedAt     = 0;
         this._duration     = track.duration || 0;
         this._bytesFed     = 0;
-        this._bytesConsumed = 0;
+        // Offset _bytesConsumed by how many old-track bytes are still in the mixer
+        // buffer at crossfade start. As those bytes drain, _bytesConsumed rises back
+        // to 0, then tracks only new-track bytes — preventing premature _waitDrain.
+        this._bytesConsumed = -(this._mixer?._bufs?.[this._mixerBufKey]?.length ?? 0);
         this._playGen      = (this._playGen || 0) + 1;
 
         this._spawnFFmpeg(track.path, 0, gain, onPcm, onEnd, this._playGen);

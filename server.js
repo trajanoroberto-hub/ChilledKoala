@@ -312,6 +312,9 @@ function _schedRaXfade() {
     const tracks = playlist.tracks;
     const track  = tracks[_raIdx];
     if (!track || !track.duration || _raXfSec <= 0) return;
+    // If track is shorter than the crossfade window, skip the timer — onEnd handles it.
+    // Scheduling with mixMs=0 would fire immediately and cascade through the playlist.
+    if (track.duration <= _raXfSec) return;
     const pos    = player1.positionSec();
     const mixMs  = Math.max(0, (track.duration - _raXfSec - pos) * 1000);
     _raXfTimer = setTimeout(() => {
@@ -550,6 +553,7 @@ function _schedRbXfade() {
     const tracks = playlistB.tracks;
     const track  = tracks[_rbIdx];
     if (!track?.duration || _rbXfSec <= 0) return;
+    if (track.duration <= _rbXfSec) return;
     const pos   = player2.positionSec();
     const mixMs = Math.max(0, (track.duration - _rbXfSec - pos) * 1000);
     _rbXfTimer  = setTimeout(() => {

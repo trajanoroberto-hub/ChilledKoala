@@ -137,28 +137,34 @@ app.use((req, res, next) => {
 });
 
 // Serve static files (all at root — flat install, no templates/ subdirectory)
-// app.js and style.css: versioned via ?v=BUILD in index.html — cache 1 hour
-// Static libs (worklets, pcm-player): never change between deploys — cache 24 hours
-// index.html / login.html / call.html: always no-store (contain inline build number)
+//
+// Cache strategy:
+//   app.js / style.css: no-cache — browser and Cloudflare must revalidate on
+//     every request. Server responds 304 Not Modified when unchanged (fast).
+//     Combined with ?v=BUILD query string in index.html, this guarantees the
+//     browser always loads the version matching the current server build.
+//   pcm-player.js / worklets: no-cache for same reason — these rarely change
+//     but must be fresh when they do.
+//   index.html / login.html / call.html: no-store (template, BUILD injected at runtime)
 app.get('/style.css', (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(__dirname, 'style.css'));
 });
 app.get('/app.js', (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(__dirname, 'app.js'));
 });
 app.get('/pcm-player.js', (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(__dirname, 'pcm-player.js'));
 });
 app.get('/earphone-worklet.js', (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Content-Type', 'application/javascript');
     res.sendFile(path.join(__dirname, 'earphone-worklet.js'));
 });
 app.get('/mic-capture-worklet.js', (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Content-Type', 'application/javascript');
     res.sendFile(path.join(__dirname, 'mic-capture-worklet.js'));
 });

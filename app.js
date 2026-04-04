@@ -658,44 +658,20 @@ function buildMonitorStrip() {
     const cuetbRow = strip.querySelector('.ch-cuetb-below-fader');
     if (cuetbRow) cuetbRow.remove();
 
-    // Replace ON/OFF row with:
-    //   Row 1: ON | OFF  (start/stop PlayerEarphone)
-    //   Row 2: 3-position rotary source selector — PGM 1 | PGM 2 | CUE
+    // Replace ON/OFF row with 3-position rotary source selector: PGM 1 | PGM 2 | CUE
+    // ON/OFF buttons removed — PlayerEarphone is always active after login.
     const onoffRow = strip.querySelector('.ch-onoff-below-fader');
     if (onoffRow) {
-        // Re-wire ON button
-        const btnOn = onoffRow.querySelector('.ch-on-btn');
-        if (btnOn) {
-            btnOn.id    = 'monPGM';
-            btnOn.title = 'Start monitor';
-            const b2 = btnOn.cloneNode(true);
-            btnOn.parentNode.replaceChild(b2, btnOn);
-            b2.addEventListener('click', async () => {
-                PlayerEarphone.resumeCtx();
-                if (!PlayerEarphone.isActive()) await PlayerEarphone.start();
-                _syncMonitorButtons();
-            });
-        }
-        // Re-wire OFF button
-        const btnOff = onoffRow.querySelector('.ch-off-btn');
-        if (btnOff) {
-            btnOff.id    = 'monOFF';
-            btnOff.title = 'Stop monitor';
-            const b2 = btnOff.cloneNode(true);
-            btnOff.parentNode.replaceChild(b2, btnOff);
-            b2.addEventListener('click', () => { PlayerEarphone.stop(); _syncMonitorButtons(); });
-        }
+        // Remove the ON/OFF buttons entirely — earphone is always on after login
+        onoffRow.remove();
 
-        // Source selector row — 2 positions: PGM 1 | CUE
-        // PGM 2 is excluded: PGM2 = PGM1 + Loc Mics, monitoring it feeds the
-        // DJ's own voice back with ~880ms delay — disorienting and useless.
-        // TB auto-routes to MON implicitly: TB channels stay in Mix 1 (the
-        // earphone feed) while being dropped from broadcast — no extra wiring needed.
+        // Source selector row — 3 positions: PGM 1 | PGM 2 | CUE
         const rotaryRow = el('div', { className: 'mon-source-row' });
         const rotary    = el('div', { className: 'mon-source-rotary', id: 'monSourceRotary' });
 
         const sources = [
             { key: 'pgm1', label: 'PGM 1' },
+            { key: 'pgm2', label: 'PGM 2' },
             { key: 'cue',  label: 'CUE'   },
         ];
         const curSrc = S.console?.monitorSource || 'pgm1';
@@ -711,18 +687,23 @@ function buildMonitorStrip() {
                 btn.classList.add('active');
                 send('console:monitor', { source: key });
                 if (S.console) S.console.monitorSource = key;
+                // Sidetone only available on PGM 1 — disable when switching away
+                if (key !== 'pgm1' && PlayerEarphone.isSidetoneOn()) {
+                    PlayerEarphone.disableSidetone();
+                    _syncSidetoneBtn();
+                }
+                _syncMonMicVisibility();
             });
             rotary.appendChild(btn);
         });
 
         rotaryRow.appendChild(rotary);
-        // Insert SOURCE selector ABOVE the ON/OFF row (PGM1/CUE on top, ON/OFF at bottom)
-        onoffRow.insertAdjacentElement('beforebegin', rotaryRow);
+        strip.appendChild(rotaryRow);
 
-        // ── MON Mic row — sidetone toggle ────────────────────────────────────
+        // ── MON Mic row — sidetone toggle (PGM 1 only) ──────────────────────
         // Connects Loc Mic 1/2 directly into the earphone AudioContext at 0ms
         // so the DJ hears their own voice like a real console sidetone circuit.
-        const micRow = el('div', { className: 'mon-source-row' });
+        const micRow = el('div', { className: 'mon-source-row', id: 'monMicRow' });
         const micBtn = el('button', {
             id:          'monMicBtn',
             className:   'mon-src-btn mon-mic-btn',
@@ -740,7 +721,8 @@ function buildMonitorStrip() {
             _syncSidetoneBtn();
         });
         micRow.appendChild(micBtn);
-        onoffRow.insertAdjacentElement('beforebegin', micRow);
+        strip.appendChild(micRow);
+        _syncMonMicVisibility();
     }
 
     wrap.appendChild(strip);
@@ -1058,8 +1040,9 @@ function applyRealVULevels(levels) {
             // Pre-fader: signal visible regardless of ON/OFF or fader position
             level = Math.min(1.2, rms * 8);
         } else if (chOn) {
-            // Post-fader: attenuate by fader gain so bar matches actual output level
-            level = Math.min(1.2, rms * 8 * faderGain);
+            // rms from server is already post-fader (vuGain = gain in mixer).
+            // Do NOT re-apply faderGain here — that would double-apply the taper.
+            level = Math.min(1.2, rms * 8);
         }
         // OFF + no CUE → level stays 0 (bar dark)
 
@@ -3169,18 +3152,12 @@ const DJMicRTC = (() => {
 // Always reflects PlayerEarphone.isActive() — not Monitor (Opus WebM) state.
 // Call this any time something might have overwritten the button classes.
 function _syncMonitorButtons() {
-    const on  = PlayerEarphone.isActive();
-    const pgm = qs('#monPGM');
-    const off = qs('#monOFF');
     const dot = qs('#monStatusDot');
     const txt = qs('#monStatusTxt');
-    if (pgm) pgm.classList.toggle('lit', on);
-    if (off) off.classList.toggle('lit', !on);
-    if (dot) dot.classList.toggle('active', on);
-    // MON LCD: green when ON, red when OFF
+    if (dot) dot.classList.toggle('active', PlayerEarphone.isActive());
     if (txt) {
-        txt.classList.toggle('lcd-on',  on);
-        txt.classList.toggle('lcd-off', !on);
+        txt.classList.toggle('lcd-on',  PlayerEarphone.isActive());
+        txt.classList.toggle('lcd-off', !PlayerEarphone.isActive());
     }
     // Sync rotary source buttons to current console state
     const src = S.console?.monitorSource || 'pgm1';
@@ -3188,11 +3165,20 @@ function _syncMonitorButtons() {
         b.classList.toggle('active', b.id === `monSrc-${src}`);
     });
     _syncSidetoneBtn();
+    _syncMonMicVisibility();
 }
 
 function _syncSidetoneBtn() {
     const btn = qs('#monMicBtn');
     if (btn) btn.classList.toggle('active', PlayerEarphone.isSidetoneOn());
+}
+
+// Show MON Mic (sidetone) row only when PGM 1 is selected.
+// On PGM 2 and CUE the sidetone is unavailable — disable it automatically.
+function _syncMonMicVisibility() {
+    const src = S.console?.monitorSource || 'pgm1';
+    const row = qs('#monMicRow');
+    if (row) row.style.display = (src === 'pgm1') ? '' : 'none';
 }
 
 // startMicCapture — called at login ('init') and on stream:started.

@@ -263,17 +263,10 @@ class AudioMixer extends EventEmitter {
         }
         if (!this._micPhase) this._micPhase = {};
         this._micPhase[sessionId] = srcPhase - src.length;
-        // Automatic delay compensation for DJ local mics (mic0/mic1).
-        // The DJ hears PGM1 through their earphone with ~700ms jitter buffer
-        // plus network one-way latency. Their voice is naturally offset by that
-        // amount. We delay mic0/mic1 in the broadcast mix by _micDelayMs so
-        // voice aligns with music in the Icecast output.
-        // _micDelayMs is set automatically from the browser RTT measurement.
-        if (this._micDelayMs > 0 && (key === 'mic0' || key === 'mic1')) {
-            this._feedBufDelayed(key, out);
-        } else {
-            this._feedBuf(key, out);
-        }
+        // Mic audio goes directly into the mixer buffer with no delay.
+        // Alignment with PGM1 music in the broadcast is handled by delaying
+        // the encoder output (_applyEncDelay), not by delaying the mic.
+        this._feedBuf(key, out);
     }
 
     // Delay line for mic0/mic1: holds _micDelayMs worth of PCM before releasing
@@ -298,6 +291,40 @@ class AudioMixer extends EventEmitter {
             s.buf = s.buf.slice(s.buf.length - s.targetBytes);
             this._feedBuf(key, release);
         }
+    }
+
+    // Broadcast output delay line: delays the `out` buffer sent to the Liquidsoap
+    // encoder by _micDelayMs so DJ voice and PGM1 music are aligned for listeners.
+    //
+    // Why delay the encoder output and not the mic:
+    //   DJ hears PGM1 at time T + L_ear (earphone jitter-buffer latency).
+    //   DJ speaks a word timed to that music at T + L_ear.
+    //   Word arrives at server at T + L_ear + L_mic (one-way mic latency).
+    //   Without delay: music is at T in broadcast, voice is at T+L_ear+L_mic → offset.
+    //   With encoder delay of L_ear+L_mic: music in broadcast at T+L_ear+L_mic,
+    //   voice also at T+L_ear+L_mic → aligned for listeners.
+    //
+    // _micDelayMs = L_ear + L_mic, set via setMicDelayMs().
+    // The broadcast is constantly `_micDelayMs` behind real-time server production.
+    // Liquidsoap/Icecast already adds seconds of buffer so this is imperceptible.
+    _applyEncDelay(chunk) {
+        if (!this._micDelayMs || this._micDelayMs <= 0) return chunk;
+        const delayBytes = Math.round(this._micDelayMs * SAMPLE_RATE / 1000) * BYTES_FRAME;
+        if (!this._encDelayBuf || this._encDelayBuf.targetBytes !== delayBytes) {
+            // (Re)initialise: pre-fill FIFO with silence equal to the delay depth.
+            // Encoder receives silence for the first _micDelayMs ms (pipeline fill).
+            this._encDelayBuf = {
+                buf:         Buffer.alloc(delayBytes, 0),
+                targetBytes: delayBytes
+            };
+        }
+        const d = this._encDelayBuf;
+        // Append new chunk to back, drain same-sized chunk from front.
+        // Buffer length stays constant at targetBytes after init.
+        d.buf = Buffer.concat([d.buf, chunk]);
+        const released = d.buf.slice(0, chunk.length);
+        d.buf = d.buf.slice(chunk.length);
+        return released;
     }
 
     feedMicChunk(sessionId, webmChunk) {
@@ -480,14 +507,16 @@ class AudioMixer extends EventEmitter {
             // Accumulate RMS for VU metering.
             // Mic channels (mic0-mic3) are metered pre-fader — DJ sees signal
             // regardless of ON/OFF state, matching hardware console behaviour.
-            // Player/guest channels are metered post-fader (only when ON/gain>0).
+            // Player/guest channels: post-fader when ON, pre-fader (unity) when CUE active.
             const isMicKey = key === 'mic0' || key === 'mic1' || key === 'mic2' || key === 'mic3';
-            const doVU = isMicKey ? (chunk.length >= 2) : (gain > 0 && chunk.length >= 2);
+            const inCue  = !!(this._cueFlags?.[key]);   // CUE: pre-fader, unity gain
+            const doVU = isMicKey ? (chunk.length >= 2) : ((gain > 0 || inCue) && chunk.length >= 2);
             if (doVU) {
                 if (!this._vuSum) this._vuSum = {};
                 if (!this._vuCnt) this._vuCnt = {};
-                // Float32: values already in [-1,+1]. No division by 32768 needed.
-                const vuGain = isMicKey ? 1 : gain;
+                // CUE-active channels metered at unity gain (pre-fader listen).
+                // ON channels metered post-fader. Mics always unity.
+                const vuGain = isMicKey ? 1 : (inCue && gain === 0 ? 1 : gain);
                 const vuSamples = Math.min(256, Math.floor(chunk.length / 8));
                 let vuSum = 0;
                 for (let vi = 0; vi < vuSamples * 8; vi += 8) {
@@ -499,7 +528,6 @@ class AudioMixer extends EventEmitter {
             }
 
             const inMix1 = AudioMixer.MIX1_KEYS.has(key);
-            const inCue  = !!(this._cueFlags?.[key]);   // CUE: pre-fader, unity gain
 
             // Skip PGM mixing when gain is 0, BUT still process CUE bus.
             // CUE is pre-fader listen — it must work even when the channel is OFF
@@ -547,9 +575,15 @@ class AudioMixer extends EventEmitter {
             _fMix1[si] = 0;
         }
 
-        // Write full broadcast mix to Liquidsoap encoder
+        // Write full broadcast mix to Liquidsoap encoder.
+        // Apply encoder output delay so the DJ's voice (which arrived at the server
+        // after one-way mic latency + earphone latency) aligns with the PGM1 music
+        // in the Icecast output. We delay the ENCODER, not the mic — delaying the
+        // mic would push voice further away; delaying the broadcast slides music
+        // forward to meet the voice where it naturally arrives.
+        const encOut = this._applyEncDelay(out);
         if (this._encoder?.stdin?.writable && !this._encoder.stdin.writableNeedDrain) {
-            try { this._encoder.stdin.write(out); } catch (_) {}
+            try { this._encoder.stdin.write(encOut); } catch (_) {}
         }
 
         // Write mix1 (station, no DJ mics) directly to earphone WS clients.
@@ -557,8 +591,10 @@ class AudioMixer extends EventEmitter {
         if (this._player1 && p1Consumed > 0) this._player1.reportConsumed(p1Consumed);
         if (this._player2 && p2Consumed > 0) this._player2.reportConsumed(p2Consumed);
 
-        // Select monitor bus: PGM1 (default) or CUE (pre-fader listen)
-        const monBus = this._monitorSource === 'cue' ? outCue : outMix1;
+        // Select monitor bus: PGM1 (default), PGM2 (full broadcast), or CUE (pre-fader listen)
+        const monBus = this._monitorSource === 'cue'  ? outCue
+                     : this._monitorSource === 'pgm2' ? out
+                     : outMix1;
 
         // Each frame is prefixed with an 8-byte header:
         //   bytes 0-3: uint32 sequence number (wraps at 2^32)
@@ -1065,9 +1101,9 @@ class AudioMixer extends EventEmitter {
     isConnecting() { return !this._streaming && this._wantStreaming; }
     getError()     { return this.error; }
 
-    // Switch monitor/earphone source: 'pgm1' (Mix 1, default) or 'cue' (pre-fader CUE bus)
+    // Switch monitor/earphone source: 'pgm1' (Mix 1), 'pgm2' (full broadcast), 'cue' (pre-fader)
     setMonitorSource(src) {
-        if (src === 'pgm1' || src === 'cue') {
+        if (src === 'pgm1' || src === 'pgm2' || src === 'cue') {
             this._monitorSource = src;
         }
     }
@@ -1087,9 +1123,12 @@ class AudioMixer extends EventEmitter {
         this._micDelayMs = clamped;
         // Keep config reference in sync so saveConfig() persists the value
         if (this.config.audio) this.config.audio.mic_delay_ms = String(clamped);
-        // Clear delay buffers so old stale data doesn't bleed through on change
+        // Clear delay buffers so old stale data doesn't bleed through on change.
+        // _micDelayBufs was used by the old mic-side delay (now unused).
+        // _encDelayBuf is the encoder-output delay — must re-init on change.
         this._micDelayBufs = {};
-        console.log(`[mixer] mic delay compensation set to ${clamped}ms`);
+        this._encDelayBuf  = null;
+        console.log(`[mixer] encoder output delay set to ${clamped}ms`);
     }
 
     getMicDelayMs() { return this._micDelayMs || 0; }

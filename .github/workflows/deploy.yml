@@ -1,48 +1,28 @@
-name: Deploy to VPS
+name: CI
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  deploy:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup SSH
-        env:
-          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/vps_key
-          chmod 600 ~/.ssh/vps_key
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Sync files to VPS
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: |
-          rsync -az --delete \
-            -e "ssh -i ~/.ssh/vps_key" \
-            --exclude='.git/' \
-            --exclude='node_modules/' \
-            --exclude='config.ini' \
-            --exclude='sessions/' \
-            --exclude='.library-cache.json' \
-            --exclude='*.log' \
-            ./ "${VPS_USER}@${VPS_HOST}:/opt/chilled_koala/"
+      - name: Install dependencies
+        run: npm install --production
 
-      - name: Install dependencies and restart
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: |
-          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
-            "cd /opt/chilled_koala && npm install --production && pm2 restart chilled_koala"
+      - name: Check syntax
+        run: node --check server.js && node --check app.js && node --check mixer.js && node --check player.js && node --check playlist.js && node --check library.js

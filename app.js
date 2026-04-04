@@ -80,7 +80,9 @@ function connectWS() {
 // serverNow comparisons. Result: only true WS one-way latency remains.
 let _clockOffset  = 0;   // VPS_clock - PC_clock in ms (positive = VPS ahead)
 let _clockSamples = [];
-let _lastRttMs    = 0;   // most recent measured round-trip time (ms) — used for mic delay auto-detect
+let _lastRttMs        = 0;    // most recent measured round-trip time (ms)
+let _pendingLatEarMs  = null; // earphone latency stored while a LAT probe is in-flight
+let _lastMicLatResult = null; // { micMs, earMs, totalMs } — most recent probe result
 
 function _clockSync() {
     _clockSamples = [];
@@ -231,6 +233,35 @@ function handleMsg(msg) {
             updateStreamUI();
             showToast(`Stream error: ${msg.error || 'Connection failed — check DJ credentials and Liquidsoap'}`, 'error');
             break;
+
+        case 'mic:pong': {
+            // Binary LAT probe round-trip complete.
+            // msg.t0 = Date.now() when browser sent probe
+            // msg.t1 = Date.now() when server received it
+            // oneWayMs = mic path latency (browser PCM → server PCM buffer)
+            const micMs   = Math.max(0, Math.round(msg.t1 - msg.t0));
+            const earMs   = (_pendingLatEarMs !== null)
+                          ? _pendingLatEarMs
+                          : Math.round(PlayerEarphone.getAudioDelaySec() * 1000);
+            const totalMs = earMs + micMs;
+            _pendingLatEarMs  = null;
+            _lastMicLatResult = { micMs, earMs, totalMs };
+            // Apply measured total delay on server
+            fetch('/api/mic-delay', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ ms: totalMs }),
+            }).catch(() => {});
+            // Update slider in Settings panel if it is open
+            const _sl = document.getElementById('micDelaySlider');
+            const _dp = document.getElementById('micDelayDisplay');
+            if (_sl) _sl.value = totalMs;
+            if (_dp) _dp.textContent = totalMs + 'ms';
+            _updateMicDelayAutoHint();
+            console.log(`[MicLatency] mic=${micMs}ms ear=${earMs}ms total=${totalMs}ms → /api/mic-delay`);
+            showToast(`Mic latency: mic ${micMs}ms + ear ${earMs}ms = ${totalMs}ms total`, 'ok', 4000);
+            break;
+        }
 
         case 'ra:state':
             RA.applyState(msg.state);
@@ -2229,21 +2260,46 @@ function checkLibraryOnRAOpen() {
 const MIC_DELAY_JITTER_MS = 700;
 
 function _calcAutoDelayMs() {
-    if (_lastRttMs <= 0) return null;
-    return Math.round(_lastRttMs / 2 + MIC_DELAY_JITTER_MS);
+    if (_lastMicLatResult) return _lastMicLatResult.totalMs;  // prefer measured value
+    if (_lastRttMs <= 0)   return null;
+    return Math.round(_lastRttMs / 2 + MIC_DELAY_JITTER_MS);  // crude fallback until first probe
 }
 
 function _updateMicDelayAutoHint() {
     const hintEl  = document.getElementById('micDelayAutoHint');
     const autoBtn = document.getElementById('micDelayAutoBtn');
     if (!hintEl) return;
-    const suggested = _calcAutoDelayMs();
-    if (suggested === null) {
-        hintEl.textContent = 'RTT not yet measured — open Settings after login';
-        if (autoBtn) autoBtn.disabled = true;
+    if (_lastMicLatResult) {
+        const { micMs, earMs, totalMs } = _lastMicLatResult;
+        hintEl.textContent = `Measured ✓  mic ${micMs}ms + ear ${earMs}ms = ${totalMs}ms`;
+        if (autoBtn) { autoBtn.disabled = false; autoBtn.textContent = '↺ Measure Again'; }
     } else {
-        hintEl.textContent = `RTT ${_lastRttMs}ms → suggested ${suggested}ms (RTT/2 + 700ms jitter buffer)`;
-        if (autoBtn) autoBtn.disabled = false;
+        const suggested = _lastRttMs > 0
+            ? Math.round(_lastRttMs / 2 + MIC_DELAY_JITTER_MS) : null;
+        if (suggested === null) {
+            hintEl.textContent = 'Not yet measured — click Measure or start earphone';
+            if (autoBtn) { autoBtn.disabled = false; autoBtn.textContent = '⟳ Measure Now'; }
+        } else {
+            hintEl.textContent = `Estimated: RTT ${_lastRttMs}ms/2 + ${MIC_DELAY_JITTER_MS}ms = ${suggested}ms — click Measure for accuracy`;
+            if (autoBtn) { autoBtn.disabled = false; autoBtn.textContent = '⟳ Measure Now'; }
+        }
+    }
+}
+
+// Send a LAT probe and wait for mic:pong to complete the measurement.
+// Can be called manually (Measure button) or automatically (earphone jitter fill).
+function measureMicLatency() {
+    if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
+        showToast('Not connected — cannot measure mic latency', 'warn');
+        return;
+    }
+    _pendingLatEarMs = Math.round(PlayerEarphone.getAudioDelaySec() * 1000);
+    const sent = WA.injectLatencyProbe();
+    if (sent) {
+        showToast('Latency probe sent — result in ~1s…', 'ok', 2000);
+    } else {
+        showToast('Mic not active — start earphone first', 'warn');
+        _pendingLatEarMs = null;
     }
 }
 
@@ -2639,11 +2695,8 @@ function bindSettingsEvents() {
 
     if (micDelayAutoBtn) {
         micDelayAutoBtn.addEventListener('click', () => {
-            const suggested = _calcAutoDelayMs();
-            if (suggested === null) { showToast('RTT not yet measured', 'warn'); return; }
-            if (micDelaySlider)  micDelaySlider.value = suggested;
-            if (micDelayDisplay) micDelayDisplay.textContent = suggested + 'ms';
-            showToast(`Auto-detected: ${suggested}ms — click Apply to save`, 'ok');
+            if (!S.isPrimary()) { showToast('Primary DJ only', 'warn'); return; }
+            measureMicLatency();
         });
     }
 
@@ -3011,7 +3064,22 @@ const WA = (() => {
         console.log('[WA] Capture stopped');
     }
 
-    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, getMicLevel };
+    // Send a latency probe binary frame over the mic WS path.
+    // Frame format: 'LAT\0' (4 bytes) + Date.now() as Float64 big-endian (8 bytes) = 12 bytes.
+    // Travels the exact same path as AudioWorklet PCM frames — measures true mic path latency.
+    // Server detects it, replies with mic:pong before routing to mixer.
+    function injectLatencyProbe() {
+        if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return false;
+        const buf  = new ArrayBuffer(12);
+        const view = new DataView(buf);
+        view.setUint8(0, 0x4C); view.setUint8(1, 0x41); // 'LA'
+        view.setUint8(2, 0x54); view.setUint8(3, 0x00); // 'T\0'
+        view.setFloat64(4, Date.now(), false);           // t0 big-endian
+        S.ws.send(buf);
+        return true;
+    }
+
+    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, getMicLevel, injectLatencyProbe };
 })();
 
 
@@ -3458,22 +3526,17 @@ const PlayerEarphone = (() => {
             _schedTime = _ctx.currentTime + 0.02;
             _started   = true;
             _rafLoop();
-            const bufMs   = Math.round(_targetBuf * 1000);
-            const totalMs = Math.round(getAudioDelaySec() * 1000);
+            const bufMs = Math.round(_targetBuf * 1000);
+            const earMs = Math.round(getAudioDelaySec() * 1000);
             console.log('[PE] jitter buffer full (' + bufMs + 'ms buf + ' +
                         Math.round(SCHED_AHEAD * 1000) + 'ms sched + ' +
                         Math.round((_ctx?.baseLatency || 0) * 1000) + 'ms hw' +
-                        ' = ' + totalMs + 'ms total earphone latency' +
-                        ', jitter≈' + Math.round(_jitterEWMA * 1000) + 'ms) — playback started ✓');
-            // Auto-calibrate server mic delay to full earphone pipeline latency:
-            //   _targetBuf + SCHED_AHEAD + ctx.baseLatency
-            // Server delays encoder output by this ms so DJ voice aligns
-            // with PGM1 music in the Icecast broadcast.
-            fetch('/api/mic-delay', {
-                method:  'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body:    JSON.stringify({ ms: totalMs }),
-            }).catch(() => {});
+                        ' = ' + earMs + 'ms earphone latency' +
+                        ', jitter≈' + Math.round(_jitterEWMA * 1000) + 'ms) — sending LAT probe…');
+            // Kick off latency probe: binary LAT\0 frame travels same path as mic PCM.
+            // mic:pong handler adds mic one-way latency and posts total to /api/mic-delay.
+            _pendingLatEarMs = earMs;
+            WA.injectLatencyProbe();
         }
     }
 

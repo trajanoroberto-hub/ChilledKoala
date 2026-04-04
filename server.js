@@ -828,6 +828,16 @@ wss.on('connection', (ws, req) => {
                     // AudioWorklet sends a 4-byte magic prefix 'PCM\0' followed by Int16 mono data.
                     // All other binary = WebM from MediaRecorder → FFmpeg decoder path.
                     const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+                    // LAT\0 latency probe frame (12 bytes: 'LAT\0' + t0 Float64 big-endian).
+                    // Reply immediately with mic:pong; do NOT route to mixer.
+                    // Browser sends this on the mic binary path so the round-trip measures
+                    // true PCM transport latency (not just JSON WS latency).
+                    if (buf.length === 12 && buf[0] === 0x4C && buf[1] === 0x41 && buf[2] === 0x54 && buf[3] === 0x00) {
+                        const t0 = buf.readDoubleBE(4);
+                        const t1 = Date.now();
+                        safeSend(ws, { type: 'mic:pong', t0, t1, oneWayMs: Math.round(t1 - t0) });
+                        return;
+                    }
                     // Detect Float32 frames (F32\0 magic) from AudioWorklet vs WebM from MediaRecorder.
                     // F32\0 = 0x46 0x33 0x32 0x00 — Float32 mono 48kHz from mic-capture-worklet.js
                     if (buf.length >= 4 && buf[0] === 0x46 && buf[1] === 0x33 && buf[2] === 0x32 && buf[3] === 0x00) {

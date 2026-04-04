@@ -71,14 +71,22 @@ class MusicLibrary {
                 return false;
             }
 
-            // Deduplicate by path — guards against a cache built with the old bug
+            // Deduplicate by resolved real path — catches symlink/hardlink duplicates
+            // stored in cache from a previous scan that didn't resolve paths.
             const entries = data.index || [];
-            const seen = new Set();
-            this.index = entries.filter(t => t.path && !seen.has(t.path) && seen.add(t.path));
+            const seenReal = new Set();
+            this.index = entries.filter(t => {
+                if (!t.path) return false;
+                let real = t.path;
+                try { real = fs.realpathSync(t.path); } catch (_) {}
+                if (seenReal.has(real)) return false;
+                seenReal.add(real);
+                return true;
+            });
             this.indexed = true;
             this._sortedCache = {};
             const dupes = entries.length - this.index.length;
-            if (dupes > 0) console.warn(`⚠ Library cache had ${dupes} duplicate path(s) — filtered on load`);
+            if (dupes > 0) console.warn(`⚠ Library cache had ${dupes} duplicate(s) removed on load (symlinks/hardlinks)`);
             console.log(`✓ Library cache loaded: ${this.index.length} tracks (schema ${CACHE_SCHEMA})`);
             return true;
         } catch (err) {
@@ -149,21 +157,34 @@ class MusicLibrary {
     // Phase 2: parallel parseFile() with concurrency=8 — ~8x faster than serial.
     // onProgress fired immediately on start, then every 50 tracks.
 
-    async _collectPaths(dir, paths, seen) {
+    async _collectPaths(dir, paths, seenFiles, visitedDirs) {
+        // Resolve dir to real path so symlinked directories aren't walked twice.
+        // e.g. /music/ByArtist/Georgia Scarlet → /music/Albums/X both resolve to the same real dir.
+        let realDir;
+        try { realDir = await fs.promises.realpath(dir); } catch (_) { realDir = dir; }
+        if (visitedDirs.has(realDir)) return;
+        visitedDirs.add(realDir);
+
         let entries;
         try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
         catch (_) { return; }
         for (const e of entries) {
             if (e.name.startsWith('.')) continue;
             const full = path.join(dir, e.name);
-            if (e.isDirectory()) {
+            if (e.isDirectory() || e.isSymbolicLink()) {
+                // Follow symlinks to directories too (stat follows the link)
+                let stat;
+                try { stat = await fs.promises.stat(full); } catch (_) { continue; }
+                if (!stat.isDirectory()) continue;
                 const low = e.name.toLowerCase();
                 if (low === 'cart' || low === 'sfx') continue;
-                await this._collectPaths(full, paths, seen);
+                await this._collectPaths(full, paths, seenFiles, visitedDirs);
             } else if (e.isFile() && path.extname(e.name).toLowerCase() === '.flac') {
-                // Guard against hardlinks / symlinks resolving to the same inode
-                if (!seen.has(full)) {
-                    seen.add(full);
+                // Resolve real path so hardlinks and file-symlinks map to one entry
+                let realFile;
+                try { realFile = await fs.promises.realpath(full); } catch (_) { realFile = full; }
+                if (!seenFiles.has(realFile)) {
+                    seenFiles.add(realFile);
                     paths.push(full);
                 }
             }
@@ -173,7 +194,7 @@ class MusicLibrary {
     async _walkDir(dir, results, onProgress) {
         // Phase 1: collect all FLAC paths (fast — no metadata I/O)
         const paths = [];
-        await this._collectPaths(dir, paths, new Set());
+        await this._collectPaths(dir, paths, new Set(), new Set());
         if (onProgress) onProgress(0);   // signal alive immediately after directory walk
 
         // Phase 2: read metadata in parallel, concurrency=8

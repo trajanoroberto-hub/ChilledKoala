@@ -20,6 +20,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const { Worker } = require('worker_threads');
 const { parseFile } = require('music-metadata');
 
 // Cache schema version — bump this with every release that changes the
@@ -164,6 +165,77 @@ class MusicLibrary {
     }
 
     async buildIndex() { return this.rescan(); }
+
+    // ── Rescan in worker_threads ───────────────────────────────────────────────
+    // Same contract as rescan() but runs the directory walk + metadata extraction
+    // entirely in a worker thread so the main-thread mixer tick is never blocked.
+    // Drop-in replacement: callers swap library.rescan() → library.rescanInWorker().
+
+    rescanInWorker(onProgress) {
+        if (this.indexing) {
+            console.warn('📚 Rescan skipped — scan already in progress');
+            return Promise.resolve(false);
+        }
+        this.indexing = true;
+        this.indexed  = false;
+        const p = this.musicPath;
+        console.log(`📚 Rescan (worker) started: ${p}`);
+
+        return new Promise((resolve, reject) => {
+            const workerPath = path.join(__dirname, 'library-worker.js');
+            const worker = new Worker(workerPath, { workerData: { musicPath: p } });
+
+            worker.on('message', (msg) => {
+                if (msg.type === 'progress') {
+                    if (onProgress) onProgress(msg.scanned);
+                } else if (msg.type === 'result') {
+                    // Deduplicate (worker already deduped by fingerprint; re-check real paths here)
+                    const entries  = msg.index || [];
+                    const seenReal = new Set();
+                    const seenFp   = new Set();
+                    this.index = entries.filter(t => {
+                        if (!t.path) return false;
+                        let real = t.path;
+                        try { real = fs.realpathSync(t.path); } catch (_) {}
+                        if (seenReal.has(real)) return false;
+                        seenReal.add(real);
+                        const fp = this._fingerprint(t);
+                        if (seenFp.has(fp)) return false;
+                        seenFp.add(fp);
+                        return true;
+                    });
+                    const dupes = entries.length - this.index.length;
+                    if (dupes > 0) console.warn(`⚠ Rescan: removed ${dupes} additional duplicate(s) on main thread`);
+                    this.indexed = true;
+                    this._sortedCache = {};
+                    this._saveCache();
+                    console.log(`✓ Rescan (worker) complete: ${this.index.length} tracks from ${p}`);
+                    this.indexing = false;
+                    resolve(true);
+                } else if (msg.type === 'error') {
+                    console.error('✗ Rescan (worker) error:', msg.error);
+                    this.indexed  = true;
+                    this.indexing = false;
+                    reject(new Error(msg.error));
+                }
+            });
+
+            worker.on('error', (err) => {
+                console.error('✗ Rescan worker crashed:', err.message);
+                this.indexed  = true;
+                this.indexing = false;
+                reject(err);
+            });
+
+            worker.on('exit', (code) => {
+                if (code !== 0 && this.indexing) {
+                    // Worker exited without sending result/error
+                    this.indexing = false;
+                    reject(new Error(`library-worker exited with code ${code}`));
+                }
+            });
+        });
+    }
 
     // ── Two-phase scan: collect all FLAC paths, then read metadata in parallel ─
     // Phase 1: fast directory walk collects every .flac path (no I/O per file).

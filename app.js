@@ -1021,6 +1021,9 @@ function applyRealVULevels(levels) {
     for (const [key, rms] of Object.entries(levels)) {
         const ch = VU_KEY_CH[key];
         if (ch === undefined) continue;
+        // mic0/mic1 VU is driven locally by _tickLocalMicVU() at ~80ms — far faster
+        // than the server round-trip (~200ms). Skip server data for these channels.
+        if (key === 'mic0' || key === 'mic1') continue;
         const consoleChannel = S.console?.channels?.[ch];
         const isMicKey = (key === 'mic0' || key === 'mic1' || key === 'mic2' || key === 'mic3');
 
@@ -1087,23 +1090,45 @@ function applyRealVULevels(levels) {
     apply8SegVUArr('mon', Math.min(1.5, _monRaw));
 }
 
+// Drive mic0 (CH0) and mic1 (CH1) VU bars from the browser-local AnalyserNode.
+// Called every ~80ms from tickVU() — replaces the server VU pipeline for local mics,
+// cutting latency from ~200ms to <5ms. All other channels still use server RMS.
+function _tickLocalMicVU() {
+    const rms = WA.getMicLevel();
+    [0, 1].forEach(chId => {
+        const ch = S.console?.channels?.[chId];
+        if (!ch) return;
+        const chOn  = ch.on  === true;
+        const chCue = ch.cue === true;
+        let level = 0;
+        if      (chCue) level = Math.min(1.2, rms * 8);
+        else if (chOn)  level = Math.min(1.2, rms * 8);
+        // OFF + no CUE → level stays 0 (bar dark)
+        const now = Date.now();
+        if (level >= (_vuPeak[chId] || 0)) {
+            _vuPeak[chId]    = level;
+            _vuPeakAge[chId] = now;
+        } else if ((now - (_vuPeakAge[chId] || 0)) > VU_HOLD_MS) {
+            _vuPeak[chId] = Math.max(level, (_vuPeak[chId] || 0) * (1 - VU_DECAY));
+        }
+        apply8SegVUArr(chId, _vuPeak[chId] || level);
+        _realLevels[chId] = level;  // mark as having real data so tickVU doesn't zero bars
+    });
+}
+
 function tickVU() {
-    // No simulation. All VU animation is driven exclusively by real PCM RMS
-    // from the server (applyRealVULevels, every 100ms).
-    // When no real data has arrived yet (e.g. before first WS connect),
-    // all bars stay dark — zero is honest; animation without signal is not.
+    // mic0/mic1 (CH0/CH1) are driven locally by _tickLocalMicVU() — no server round-trip.
+    // All other channels: server VU data via applyRealVULevels() every ~100ms.
+    _tickLocalMicVU();
     const hasRealData = Object.keys(_realLevels).length > 0;
     if (!hasRealData) {
-        // Zero all channel bars
+        // Zero all channel bars (pre-login, no data yet)
         for (let i = 0; i < 8; i++) apply8SegVUArr(i, 0);
-        // Zero all PGM buses
         applySmallMeterArr(_pgm1SegsL, 0); applySmallMeterArr(_pgm1SegsR, 0);
         applySmallMeterArr(_pgm2SegsL, 0); applySmallMeterArr(_pgm2SegsR, 0);
-        // Zero MON
         apply8SegVUArr('mon', 0);
     }
-    // When real data is present, applyRealVULevels() handles everything.
-    // tickVU does nothing — real updates arrive every ~100ms from the server.
+    // When real data is present, server updates (applyRealVULevels) handle channels 2–7.
 }
 
 function applySegMeterArr(segs, level) {
@@ -2742,6 +2767,7 @@ const WA = (() => {
     const _micNodes   = {};     // channelId → MediaStreamSourceNode
     let   _micStream  = null;
     let   _micStreamPromise = null;  // guards concurrent getUserMedia calls
+    let   _micAnalyser = null;  // AnalyserNode on raw mic stream — local VU at ~0ms latency
 
     function _taper(f) {
         if (f <= 0) return 0;
@@ -2843,6 +2869,30 @@ const WA = (() => {
                 return;
             }
         });
+    }
+
+    // Return instantaneous RMS level of the local mic stream (0.0–1.0).
+    // Creates the AnalyserNode lazily the first time it is called after getUserMedia
+    // resolves. Called every ~80ms from tickVU() — bypasses the server VU pipeline
+    // entirely, cutting mic VU latency from ~200ms to <5ms.
+    function getMicLevel() {
+        if (!_ctx || !_micStream) return 0;
+        if (!_micAnalyser) {
+            try {
+                const src = _ctx.createMediaStreamSource(_micStream);
+                _micAnalyser = _ctx.createAnalyser();
+                _micAnalyser.fftSize = 256;
+                _micAnalyser.smoothingTimeConstant = 0;  // no smoothing — raw RMS per tick
+                src.connect(_micAnalyser);
+                // Deliberately NOT connected to _ctx.destination — analysis only,
+                // no audio playback (that would cause feedback through the earphone).
+            } catch (_) { return 0; }
+        }
+        const buf = new Float32Array(_micAnalyser.frequencyBinCount);
+        _micAnalyser.getFloatTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        return Math.sqrt(sum / buf.length);
     }
 
     function getCtx()    { return _ctx; }
@@ -2973,7 +3023,7 @@ const WA = (() => {
         console.log('[WA] Capture stopped');
     }
 
-    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, disableMicCapture, enableMicCapture };
+    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, getMicLevel, disableMicCapture, enableMicCapture };
 })();
 
 // ── DJMicRTC — WebRTC mic path for minimum latency ───────────────────────────

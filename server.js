@@ -1140,7 +1140,7 @@ async function handleWS(ws, msg) {
                 broadcast({ type: 'library:indexing', path: library.musicPath, jobId: jid });
                 setImmediate(async () => {
                     try {
-                        await library.rescan((scanned) => {
+                        await library.rescanInWorker((scanned) => {
                             if (SCAN_JOBS[jid]) SCAN_JOBS[jid].scanned = scanned;
                         });
                         await library.loadCart();
@@ -1915,7 +1915,7 @@ app.get('/api/library/reindex', primaryOnly, (req, res) => {
     broadcast({ type: 'library:indexing', path: library.musicPath, jobId: jid });
     setImmediate(async () => {
         try {
-            await library.rescan((scanned) => {
+            await library.rescanInWorker((scanned) => {
                 if (SCAN_JOBS[jid]) SCAN_JOBS[jid].scanned = scanned;
             });
             await library.loadCart();

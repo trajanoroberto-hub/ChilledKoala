@@ -71,22 +71,26 @@ class MusicLibrary {
                 return false;
             }
 
-            // Deduplicate by resolved real path — catches symlink/hardlink duplicates
-            // stored in cache from a previous scan that didn't resolve paths.
-            const entries = data.index || [];
+            // Deduplicate: first by real path (symlinks/hardlinks), then by metadata
+            // fingerprint (actual file copies with identical content/tags).
+            const entries  = data.index || [];
             const seenReal = new Set();
+            const seenFp   = new Set();
             this.index = entries.filter(t => {
                 if (!t.path) return false;
                 let real = t.path;
                 try { real = fs.realpathSync(t.path); } catch (_) {}
                 if (seenReal.has(real)) return false;
                 seenReal.add(real);
+                const fp = this._fingerprint(t);
+                if (seenFp.has(fp)) return false;
+                seenFp.add(fp);
                 return true;
             });
             this.indexed = true;
             this._sortedCache = {};
             const dupes = entries.length - this.index.length;
-            if (dupes > 0) console.warn(`⚠ Library cache had ${dupes} duplicate(s) removed on load (symlinks/hardlinks)`);
+            if (dupes > 0) console.warn(`⚠ Library cache: removed ${dupes} duplicate track(s) on load`);
             console.log(`✓ Library cache loaded: ${this.index.length} tracks (schema ${CACHE_SCHEMA})`);
             return true;
         } catch (err) {
@@ -135,7 +139,16 @@ class MusicLibrary {
             }
             const results = [];
             await this._walkDir(p, results, onProgress);
-            this.index   = results;
+            // Deduplicate by metadata fingerprint — catches actual file copies
+            const seenFp = new Set();
+            this.index = results.filter(t => {
+                const fp = this._fingerprint(t);
+                if (seenFp.has(fp)) return false;
+                seenFp.add(fp);
+                return true;
+            });
+            const dupes = results.length - this.index.length;
+            if (dupes > 0) console.warn(`⚠ Rescan: removed ${dupes} duplicate track(s)`);
             this.indexed = true;
             this._sortedCache = {};
             this._saveCache();
@@ -156,6 +169,15 @@ class MusicLibrary {
     // Phase 1: fast directory walk collects every .flac path (no I/O per file).
     // Phase 2: parallel parseFile() with concurrency=8 — ~8x faster than serial.
     // onProgress fired immediately on start, then every 50 tracks.
+
+    // Unique fingerprint for a track based on content, not file path.
+    // Used to deduplicate file copies (same song stored in two locations).
+    // trackid is authoritative when set; otherwise fall back to artist+title+album+duration.
+    _fingerprint(t) {
+        if (t.trackid) return `id:${t.trackid}`;
+        const dur = Math.round(t.duration || 0);
+        return `${(t.artist || '').toLowerCase()}|${(t.title || '').toLowerCase()}|${(t.album || '').toLowerCase()}|${dur}`;
+    }
 
     async _collectPaths(dir, paths, seenFiles, visitedDirs) {
         // Resolve dir to real path so symlinked directories aren't walked twice.

@@ -147,6 +147,46 @@ class AudioMixer extends EventEmitter {
         return !!(this._guestTB?.[slot]);
     }
 
+    // ── Inaudible pilot tone injection (earphone path) ────────────────────────
+    // Injects a short 17kHz sine burst into outMix1 during _tick() so the browser
+    // can detect its arrival time using an AnalyserNode. Used for ear latency
+    // measurement without cross-clock ambiguity — everything is server-clock-stamped.
+    // durationMs: how long to inject (600ms is enough for one jitter-buffer cycle)
+    // freq: pilot frequency in Hz (default 17000 — inaudible, within PCM bandwidth)
+    injectEarphonePilot(durationMs, freq = 17000) {
+        const frames = Math.round(SAMPLE_RATE * durationMs / 1000);
+        this._pilotFrames = frames;
+        this._pilotPhase  = 0;
+        this._pilotOmega  = 2 * Math.PI * freq / SAMPLE_RATE;
+        this._pilotAmp    = 0.08;   // –22 dBFS — inaudible but well above noise floor
+        console.log(`[mixer] Ear pilot: ${freq}Hz for ${durationMs}ms (${frames} frames)`);
+    }
+
+    // ── Goertzel mic burst detector ───────────────────────────────────────────
+    // Arms a Goertzel filter on incoming Float32 mic PCM (48kHz mono) for the
+    // specified mixer key. Calls callback(t_detect_ms, power) when pilot detected,
+    // or times out after timeoutMs and clears itself.
+    // Goertzel coeff for 17kHz at 48kHz, block size 960 (one 20ms worklet frame):
+    //   k = round(960 × 17000 / 48000) = 340
+    //   ω = 2π × 340 / 960
+    //   coeff = 2 × cos(ω)
+    startMicBurstDetect(micKey, timeoutMs, callback) {
+        const Fs = 48000, N = 960, f = 17000;
+        const k     = Math.round(N * f / Fs);          // 340
+        const omega = 2 * Math.PI * k / N;
+        const coeff = 2 * Math.cos(omega);
+        // Detection threshold: pilot at 0.08 amplitude → power ≈ 0.08² × N/2 ≈ 3.07
+        // Use 2.0 as threshold (well below signal, well above silence noise floor).
+        const timer = setTimeout(() => {
+            if (this._goertzel?.micKey === micKey) {
+                console.warn(`[mixer] Goertzel timeout (${timeoutMs}ms) — pilot not detected on ${micKey}`);
+                this._goertzel = null;
+            }
+        }, timeoutMs);
+        this._goertzel = { micKey, coeff, N, s: 0, s1: 0, n: 0, threshold: 2.0, timer, callback };
+        console.log(`[mixer] Goertzel armed: ${micKey} k=${k} coeff=${coeff.toFixed(4)}`);
+    }
+
     // ── Mix 1 tap — DJ earphone path ─────────────────────────────────────────
     // PCM Mix 1 = all sources EXCEPT DJ local mics (mic0, mic1).
     // Produced by _tick() every 20ms as a clock-stable s16le buffer.
@@ -246,6 +286,31 @@ class AudioMixer extends EventEmitter {
         if (!key) return;
         // src: mono Float32 at 48000Hz
         const src    = new Float32Array(float32Buffer);
+
+        // ── Goertzel pilot tone detection ────────────────────────────────────
+        // Runs on each 960-sample (20ms) Float32 block. Accumulates Goertzel
+        // state per block; on threshold hit fires callback and clears itself.
+        if (this._goertzel && this._goertzel.micKey === key) {
+            const g = this._goertzel;
+            for (let i = 0; i < src.length; i++) {
+                const s  = src[i] + g.coeff * g.s - g.s1;
+                g.s1 = g.s;
+                g.s  = s;
+                g.n++;
+                if (g.n >= g.N) {
+                    const power = g.s * g.s + g.s1 * g.s1 - g.coeff * g.s * g.s1;
+                    if (power > g.threshold * g.N) {
+                        clearTimeout(g.timer);
+                        const cb = g.callback;
+                        this._goertzel = null;
+                        cb(Date.now(), power);
+                        break;
+                    }
+                    // Reset for next block
+                    g.s = 0; g.s1 = 0; g.n = 0;
+                }
+            }
+        }
         const ratio  = 48000 / 44100;           // ~1.0884
         const outLen = Math.round(src.length / ratio);
         // Output: stereo Float32 at 44100Hz = outLen frames × 2 ch × 4 bytes = outLen * 8 bytes
@@ -584,6 +649,29 @@ class AudioMixer extends EventEmitter {
         const encOut = this._applyEncDelay(out);
         if (this._encoder?.stdin?.writable && !this._encoder.stdin.writableNeedDrain) {
             try { this._encoder.stdin.write(encOut); } catch (_) {}
+        }
+
+        // ── Inject inaudible earphone pilot tone (17kHz) ─────────────────────
+        // Mixed directly into outMix1 so it travels the exact same path as PGM1
+        // audio to the browser earphone. Browser detects arrival via AnalyserNode.
+        // Amplitude 0.08 (–22 dBFS) — above most adult hearing threshold.
+        if (this._pilotFrames > 0) {
+            const toInject = Math.min(frames, this._pilotFrames);
+            for (let i = 0; i < toInject; i++) {
+                const samp   = this._pilotAmp * Math.sin(this._pilotPhase);
+                this._pilotPhase += this._pilotOmega;
+                const byteOff = i * BYTES_FRAME;
+                // L channel
+                const curL = outMix1.readDoubleLE(byteOff);
+                outMix1.writeDoubleLE(Math.max(-1, Math.min(1, curL + samp)), byteOff);
+                // R channel (same signal, mono pilot)
+                const curR = outMix1.readDoubleLE(byteOff + 8);
+                outMix1.writeDoubleLE(Math.max(-1, Math.min(1, curR + samp)), byteOff + 8);
+            }
+            this._pilotFrames -= toInject;
+            if (this._pilotFrames === 0) {
+                console.log('[mixer] Ear pilot injection complete');
+            }
         }
 
         // Write mix1 (station, no DJ mics) directly to earphone WS clients.
@@ -1132,6 +1220,37 @@ class AudioMixer extends EventEmitter {
     }
 
     getMicDelayMs() { return this._micDelayMs || 0; }
+
+    // ── In-place encoder delay adjustment ─────────────────────────────────
+    // Used for continuous small corrections (<200ms) while Loc Mic is ON.
+    // Modifies the delay FIFO without pre-filling silence, so the broadcast
+    // experiences only a short hold (delay increase) or skip (delay decrease)
+    // instead of a full FIFO re-init which would inject up to 2s of silence.
+    // For |delta| >= 200ms or when no FIFO exists, falls back to setMicDelayMs.
+    adjustMicDelayMs(newMs) {
+        const clamped = Math.max(0, Math.min(2000, Math.round(newMs)));
+        const oldMs   = this._micDelayMs;
+        const deltaMs = clamped - oldMs;
+        if (deltaMs === 0) return;
+        if (!this._encDelayBuf || Math.abs(deltaMs) >= 200) {
+            this.setMicDelayMs(clamped);   // fall back to full reset
+            return;
+        }
+        this._micDelayMs = clamped;
+        if (this.config.audio) this.config.audio.mic_delay_ms = String(clamped);
+        const deltaBytes = Math.round(Math.abs(deltaMs) * SAMPLE_RATE / 1000) * BYTES_FRAME;
+        if (deltaMs > 0) {
+            // Delay increased: prepend silence so output holds for deltaMs
+            const pad = Buffer.alloc(deltaBytes, 0);
+            this._encDelayBuf.buf = Buffer.concat([pad, this._encDelayBuf.buf]);
+        } else {
+            // Delay decreased: drop bytes from front so output skips forward deltaMs
+            const toDrop = Math.min(deltaBytes, this._encDelayBuf.buf.length);
+            this._encDelayBuf.buf = this._encDelayBuf.buf.slice(toDrop);
+        }
+        this._encDelayBuf.targetBytes = Math.round(clamped * SAMPLE_RATE / 1000) * BYTES_FRAME;
+        console.log(`[mixer] delay adjusted in-place: ${oldMs}→${clamped}ms (${deltaMs > 0 ? '+' : ''}${deltaMs}ms)`);
+    }
 
     getStatus() {
         const ic = this.config.icecast;

@@ -380,6 +380,21 @@ function raBroadcastPlaylist() {
 // micSessions: Map of sessionId → { username, ws }
 const micSessions = new Map();
 
+// ── Latency probe state ───────────────────────────────────────────────────
+// Tracks in-flight bi-directional latency probes.
+// id → { ws, t_mic_inject_vps, micMs?, earMs? }
+// Both micMs and earMs must arrive before lat:result is sent.
+const _latProbes = new Map();
+
+function _tryFinishProbe(id) {
+    const probe = _latProbes.get(id);
+    if (!probe || probe.micMs === undefined || probe.earMs === undefined) return;
+    _latProbes.delete(id);
+    const totalMs = probe.earMs + probe.micMs;
+    safeSend(probe.ws, { type: 'lat:result', id, earMs: probe.earMs, micMs: probe.micMs, totalMs });
+    console.log(`[lat] Result: id=${id} ear=${probe.earMs}ms mic=${probe.micMs}ms total=${totalMs}ms`);
+}
+
 // Assign mixer keys to mic sessions based on who is primary.
 // Primary's mics → mic0, mic1 (CH1, CH2 on RT)
 // Secondary's mics → mic2, mic3 (CH3, CH4 on RT)
@@ -928,6 +943,8 @@ async function handleWS(ws, msg) {
         'library:reindex','config:save',
         // Guest management
         'guest:kick',
+        // Latency measurement
+        'lat:start',
     ]);
 
     if (controlOps.has(type) && !isPrimary(ws)) {
@@ -945,6 +962,50 @@ async function handleWS(ws, msg) {
         case 'clock:ping':
             safeSend(ws, { type: 'clock:pong', t0: msg.t0, t1: Date.now() });
             break;
+
+        // ── Bi-directional latency measurement ────────────────────────────────
+        // Triggered when Loc Mic 1 or 2 ON button is pressed.
+        // Browser is simultaneously injecting a 17kHz pilot into mic PCM.
+        // Server injects 17kHz pilot into earphone outMix1.
+        // Server detects browser pilot via Goertzel → micMs.
+        // Browser detects server pilot via AnalyserNode → earMs → lat:ear_detected.
+        // When both arrive, lat:result is sent with the combined measurement.
+        case 'lat:start': {
+            const micKey = mixer._micMap.get(ws._micSessionId);
+            if (!micKey) {
+                safeSend(ws, { type: 'error', message: 'Mic not registered — send mic audio first' });
+                break;
+            }
+            const id            = Math.random().toString(16).slice(2, 10);
+            const t_ear_inject  = Date.now();
+            const t_mic_inject_vps = payload.t_mic_inject_vps || Date.now();
+
+            // Inject 600ms 17kHz pilot into earphone output (outMix1)
+            mixer.injectEarphonePilot(600, 17000);
+
+            // Arm Goertzel detector for this mic key (5s timeout)
+            mixer.startMicBurstDetect(micKey, 5000, (t_detect, power) => {
+                const probe = _latProbes.get(id);
+                if (!probe) return;
+                probe.micMs = Math.max(0, Math.round(t_detect - probe.t_mic_inject_vps));
+                console.log(`[lat] Goertzel: power=${power.toFixed(1)} micMs=${probe.micMs}`);
+                _tryFinishProbe(id);
+            });
+
+            _latProbes.set(id, { ws, t_mic_inject_vps });
+            safeSend(ws, { type: 'lat:probe', id, t_ear_inject });
+            console.log(`[lat] Probe started: id=${id} micKey=${micKey}`);
+            break;
+        }
+
+        case 'lat:ear_detected': {
+            const probe = _latProbes.get(payload.id);
+            if (!probe) break;
+            probe.earMs = Math.max(0, Math.round(payload.earMs));
+            console.log(`[lat] Ear detected: id=${payload.id} earMs=${probe.earMs}`);
+            _tryFinishProbe(payload.id);
+            break;
+        }
 
         // ── Primary handoff ───────────────────────────────────────────────────
         case 'users:passControl': {
@@ -1333,19 +1394,26 @@ app.get('/api/library/status',  auth_, (req, res) => res.json({ indexed: library
 app.get('/api/library/tree',    auth_, (req, res) => res.json(library.getTree()));
 
 // ── Mic Delay Compensation ────────────────────────────────────────────────────
-// POST /api/mic-delay  { ms: number }
-// Sets the delay applied to mic0/mic1 before entering the broadcast mix.
+// POST /api/mic-delay  { ms: number, adjust?: boolean }
+// Sets the delay applied to the encoder output (broadcast delay alignment).
+// adjust=true: in-place FIFO tweak (no silence injection, for continuous tracking)
+// adjust=false/absent: full FIFO reset (used on first calibration or manual set)
 // Persisted to config.ini immediately.
 app.post('/api/mic-delay', primaryOnly, (req, res) => {
-    const ms = parseInt(req.body?.ms, 10);
+    const ms     = parseInt(req.body?.ms, 10);
+    const adjust = req.body?.adjust === true;
     if (isNaN(ms) || ms < 0 || ms > 2000) {
         return res.status(400).json({ error: 'ms must be 0–2000' });
     }
-    mixer.setMicDelayMs(ms);
+    if (adjust) {
+        mixer.adjustMicDelayMs(ms);  // in-place: minimal broadcast disruption
+    } else {
+        mixer.setMicDelayMs(ms);     // full reset: used for initial calibration
+    }
     if (!config.audio) config.audio = {};
     config.audio.mic_delay_ms = String(ms);
     saveConfig();
-    console.log(`[mic-delay] set to ${ms}ms — saved to config.ini`);
+    console.log(`[mic-delay] ${adjust ? 'adjusted' : 'set'} to ${ms}ms — saved to config.ini`);
     res.json({ ok: true, micDelayMs: ms });
 });
 
@@ -1876,6 +1944,74 @@ app.get('/api/audio-quality', auth_, (req, res) => {
             },
             delivery: deliveryStats,
             tip: 'For best earphone quality: p1_buffer_ms should cycle between 400ms–800ms steadily with no 0ms dips.',
+        });
+    });
+});
+
+// Force an immediate NTP resync on the VPS.  Primary DJ only.
+//
+// Strategy (in order):
+//   1. chronyc makestep           — immediate step correction (preferred)
+//   2. sudo -n chronyc makestep   — same, via sudoers NOPASSWD
+//   3. timedatectl set-ntp true + systemctl restart systemd-timesyncd
+//   4. sudo -n variants of step 3
+//
+// If all fail: responds with ok=false, the process username, and the exact
+// sudoers one-liner the operator must run once on the VPS to grant permission.
+app.post('/api/admin/ntp-sync', primaryOnly, (req, res) => {
+    const { execFile } = require('child_process');
+    const processUser  = (() => { try { return require('os').userInfo().username; } catch(_) { return 'node'; } })();
+
+    // Run cmd [args], if it fails retry with 'sudo -n' prepended.
+    // cb(err, combinedOutput)
+    function tryCmd(cmd, args, cb) {
+        execFile(cmd, args, { timeout: 8000 }, (err, out, errOut) => {
+            const combined = (out + errOut).trim();
+            if (!err) return cb(null, combined);
+            // ENOENT = binary not installed — sudo won't help
+            if (err.code === 'ENOENT') return cb(Object.assign(err, { notFound: true }), combined);
+            // Try sudo -n (non-interactive: works only when sudoers NOPASSWD is set)
+            execFile('sudo', ['-n', cmd, ...args], { timeout: 8000 }, (err2, out2, errOut2) => {
+                cb(err2, (out2 + errOut2).trim());
+            });
+        });
+    }
+
+    // Attempt chronyc makestep
+    tryCmd('chronyc', ['makestep'], (err1, out1) => {
+        if (!err1) {
+            console.log('[ntp-sync] chronyc makestep ok:', out1);
+            return res.json({ ok: true, method: 'chronyc', output: out1 || '200 OK' });
+        }
+        const noChronyd = err1.notFound;
+
+        // Attempt timedatectl set-ntp true
+        tryCmd('timedatectl', ['set-ntp', 'true'], (err2, out2) => {
+            if (!err2) {
+                // NTP enabled — also restart the service so the step fires immediately
+                tryCmd('systemctl', ['restart', 'systemd-timesyncd'], (err3) => {
+                    const msg = err3 ? 'NTP enabled (service already running)' : 'NTP enabled, service restarted';
+                    console.log('[ntp-sync] timedatectl ok —', msg);
+                    return res.json({ ok: true, method: 'systemd-timesyncd', output: msg });
+                });
+                return;
+            }
+
+            // All methods failed — build an actionable fix for the operator
+            const bin = (b) => [`/usr/bin/${b}`, `/usr/sbin/${b}`, `/bin/${b}`].join(' or ');
+            const lines = [
+                `${processUser} ALL=(ALL) NOPASSWD: /usr/bin/chronyc makestep`,
+                `${processUser} ALL=(ALL) NOPASSWD: /usr/bin/timedatectl set-ntp true`,
+                `${processUser} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart systemd-timesyncd`,
+            ];
+            const fixCmd =
+                `printf '${lines.join('\\n')}\\n' | sudo tee /etc/sudoers.d/ck-ntp >/dev/null` +
+                ` && sudo chmod 440 /etc/sudoers.d/ck-ntp`;
+            const errorDetail = noChronyd
+                ? `chrony not installed — timedatectl: ${out2}`
+                : `chronyc: ${out1} | timedatectl: ${out2}`;
+            console.warn('[ntp-sync] permission denied. User:', processUser, '|', errorDetail);
+            res.json({ ok: false, error: errorDetail, processUser, fix: fixCmd });
         });
     });
 });

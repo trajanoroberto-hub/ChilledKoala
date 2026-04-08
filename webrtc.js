@@ -50,6 +50,7 @@ class WebRTCGuests extends EventEmitter {
         this._earphones   = new Map(); // sessionId → earphone session (server→browser audio)
         this._gains     = [0, 0];
         this._announcedIp = null;
+        this._workerRestarts = 0;   // consecutive crash count — drives exponential backoff
     }
 
     // ── Initialise mediasoup worker ───────────────────────────────────────────
@@ -62,9 +63,24 @@ class WebRTCGuests extends EventEmitter {
                 rtcMaxPort: 40099,
             });
 
-            this._worker.on('died', () => {
-                console.error('[webrtc] mediasoup worker died — restarting in 2s');
-                setTimeout(() => this.init(), 2000);
+            this._worker.on('died', (error) => {
+                this._ready = false;
+                const attempt = ++this._workerRestarts;
+                // Exponential backoff: 1s, 2s, 4s, 8s, 16s … capped at 30s
+                const delayMs = Math.min(30000, 1000 * Math.pow(2, attempt - 1));
+                const pid     = this._worker?.pid ?? '?';
+                // mediasoup passes an Error on unexpected exit; log every available field
+                const reason  = error instanceof Error
+                    ? `${error.message} (code=${error.code ?? '?'} signal=${error.signal ?? '?'})`
+                    : (error != null ? String(error) : 'no reason provided');
+                console.error(
+                    `[webrtc] mediasoup worker died` +
+                    ` | pid=${pid}` +
+                    ` | reason: ${reason}` +
+                    ` | crash #${attempt}` +
+                    ` | retrying in ${delayMs}ms`
+                );
+                setTimeout(() => this.init(), delayMs);
             });
 
             this._router = await this._worker.createRouter({
@@ -78,7 +94,8 @@ class WebRTCGuests extends EventEmitter {
                 ]
             });
 
-            this._ready = true;
+            this._ready          = true;
+            this._workerRestarts = 0;   // clean startup — reset backoff counter
             console.log('[webrtc] mediasoup ready — RTP ports 40000-40099');
             this.emit('ready');
         } catch (err) {

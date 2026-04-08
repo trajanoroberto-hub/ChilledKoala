@@ -84,6 +84,15 @@ let _lastRttMs        = 0;    // most recent measured round-trip time (ms)
 let _pendingLatEarMs  = null; // earphone latency stored while a LAT probe is in-flight
 let _lastMicLatResult = null; // { micMs, earMs, totalMs } — most recent probe result
 
+// ── Continuous mic latency tracking ──────────────────────────────────────────
+// Active only while Loc Mic 1 (chId=0) or Loc Mic 2 (chId=1) is ON.
+// Every 10s: sends a clock ping to refresh _lastRttMs.
+// After each pong: recalculates totalMs = earMs + micMs with EWMA smoothing.
+// Applies via /api/mic-delay with adjust=true (in-place FIFO tweak, no silence).
+let _micTrackTimer    = null; // setInterval ID — null when tracking is inactive
+let _micLatEWMA       = null; // EWMA-smoothed total delay (ms) while tracking
+let _micTrackLastMs   = 0;    // Date.now() of last adjustment sent to server
+
 function _clockSync() {
     _clockSamples = [];
     _sendClockPing();
@@ -100,15 +109,21 @@ function _onClockPong(msg) {
     const rtt    = t2 - msg.t0;
     const offset = msg.t1 - (msg.t0 + rtt / 2);   // VPS clock - PC clock
     _clockSamples.push(offset);
-    if (_clockSamples.length < 3) {
+    if (_clockSamples.length > 10) _clockSamples.shift();  // cap: keep last 10 only
+    if (_clockSamples.length < 5) {
         setTimeout(_sendClockPing, 50);
     } else {
-        const sorted = [..._clockSamples].sort((a, b) => a - b);
-        _clockOffset = sorted[1];   // median of 3
-        _lastRttMs   = rtt;         // store for mic delay auto-detect
+        // Use most recent 5 samples for the median (recent-window, not all-time)
+        const recent = _clockSamples.slice(-5);
+        const sorted = [...recent].sort((a, b) => a - b);
+        _clockOffset = sorted[2];   // median of 5
+        _lastRttMs   = rtt;         // most recent RTT — used for mic delay estimate
         console.log(`[clock] offset=${_clockOffset.toFixed(0)}ms rtt=${rtt}ms`);
         // Update mic delay auto-detect suggestion in Settings if panel is visible
         _updateMicDelayAutoHint();
+        _updateClockOffsetDisplay();
+        // If Loc Mic is ON, apply dynamic delay update with fresh RTT
+        _applyDynamicMicDelay();
     }
 }
 
@@ -200,6 +215,8 @@ function handleMsg(msg) {
             PlayerEarphone.syncConsole(msg.state?.channels); // B: CH5 ON/fader → earphone gain
             // Refresh channel rows in Settings if that tab is open
             if (qs('#tab-settings')?.classList.contains('active')) renderSettingsChannels();
+            // Sync continuous tracking: start if any Loc Mic is ON (e.g. page reload while mic live)
+            if (_locMicIsOn()) _startMicLatTracking(); else _stopMicLatTracking();
             break;
 
         case 'stream:started':
@@ -236,10 +253,10 @@ function handleMsg(msg) {
 
         case 'mic:pong': {
             // Binary LAT probe round-trip complete.
-            // msg.t0 = Date.now() when browser sent probe
-            // msg.t1 = Date.now() when server received it
-            // oneWayMs = mic path latency (browser PCM → server PCM buffer)
-            const micMs   = Math.max(0, Math.round(msg.t1 - msg.t0));
+            // msg.t0 = Date.now() (browser clock) when probe was sent.
+            // RTT/2 used instead of (msg.t1 - msg.t0) to avoid cross-clock error:
+            // VPS and browser clocks may differ by _clockOffset; RTT/2 is clock-neutral.
+            const micMs   = Math.max(0, Math.round((Date.now() - msg.t0) / 2));
             const earMs   = (_pendingLatEarMs !== null)
                           ? _pendingLatEarMs
                           : Math.round(PlayerEarphone.getAudioDelaySec() * 1000);
@@ -260,6 +277,37 @@ function handleMsg(msg) {
             _updateMicDelayAutoHint();
             console.log(`[MicLatency] mic=${micMs}ms ear=${earMs}ms total=${totalMs}ms → /api/mic-delay`);
             showToast(`Mic latency: mic ${micMs}ms + ear ${earMs}ms = ${totalMs}ms total`, 'ok', 4000);
+            break;
+        }
+
+        // ── Latency probe — pilot tone bi-directional measurement ─────────────
+        case 'lat:probe': {
+            // Server has started injecting 17kHz into earphone output.
+            // Start polling AnalyserNode for arrival.
+            const { id, t_ear_inject } = msg;
+            PlayerEarphone.startEarPilotDetect(id, t_ear_inject, (probeId, earMs) => {
+                console.log(`[lat] Ear pilot detected: earMs=${earMs}`);
+                send('lat:ear_detected', { id: probeId, earMs });
+            });
+            break;
+        }
+
+        case 'lat:result': {
+            // Both mic and ear latencies measured — apply total delay and report.
+            const { earMs, micMs, totalMs } = msg;
+            _lastMicLatResult = { micMs, earMs, totalMs };
+            fetch('/api/mic-delay', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ ms: totalMs }),
+            }).catch(() => {});
+            const _sl = document.getElementById('micDelaySlider');
+            const _dp = document.getElementById('micDelayDisplay');
+            if (_sl) _sl.value = totalMs;
+            if (_dp) _dp.textContent = totalMs + 'ms';
+            _updateMicDelayAutoHint();
+            console.log(`[lat] Result applied: mic=${micMs}ms ear=${earMs}ms total=${totalMs}ms`);
+            showToast(`Latency measured: mic ${micMs}ms + ear ${earMs}ms = ${totalMs}ms total`, 'ok', 5000);
             break;
         }
 
@@ -896,12 +944,22 @@ function buildChannel(chId) {
         WA.syncToConsole();
         updateConsoleUI();
         send('console:on', { chId, on: true  });
+        // Trigger bi-directional latency measurement when Loc Mic 1 (chId=0) or
+        // Loc Mic 2 (chId=1) is turned ON — these are the DJ's local mics.
+        if (chId === 0 || chId === 1) {
+            startLatencyMeasure(chId);  // one-shot pilot-tone precise measurement
+            _startMicLatTracking();     // continuous RTT-based dynamic tracking
+        }
     });
     btnOff.addEventListener('click', () => {
         if (S.console?.channels?.[chId]) S.console.channels[chId].on = false;
         WA.syncToConsole();
         updateConsoleUI();
         send('console:on', { chId, on: false });
+        // Stop continuous tracking only when BOTH Loc Mics are now OFF
+        if (chId === 0 || chId === 1) {
+            if (!_locMicIsOn()) _stopMicLatTracking();
+        }
     });
     onoff.appendChild(btnOn); onoff.appendChild(btnOff);
     strip.appendChild(onoff);
@@ -2265,6 +2323,91 @@ function _calcAutoDelayMs() {
     return Math.round(_lastRttMs / 2 + MIC_DELAY_JITTER_MS);  // crude fallback until first probe
 }
 
+// Update the Settings clock status row with the live WS-measured clock offset.
+// Only sets text if the row is blank (doesn't overwrite the HTTP NTP check result).
+function _updateClockOffsetDisplay() {
+    const el = qs('#settingsClockStatus');
+    if (!el) return;
+    if (_lastRttMs > 0) {
+        const sign = _clockOffset >= 0 ? '+' : '';
+        const skewAbs = Math.abs(_clockOffset);
+        // Don't overwrite an HTTP NTP check result (those show ✓ / ⚠ / ✗)
+        if (el.textContent && /[✓⚠✗]/.test(el.textContent)) return;
+        el.textContent = `WS offset ${sign}${Math.round(_clockOffset)}ms  (RTT ${Math.round(_lastRttMs)}ms)`;
+        el.className   = skewAbs < 200 ? 'settings-reindex-status done'
+                       : skewAbs < 2000 ? 'settings-reindex-status indexing'
+                       : 'settings-reindex-status error';
+    }
+}
+
+// ── Continuous latency tracking helpers ──────────────────────────────────────
+
+function _locMicIsOn() {
+    return (S.console?.channels?.[0]?.on === true) ||
+           (S.console?.channels?.[1]?.on === true);
+}
+
+// Start the 10-second RTT-refresh interval. Idempotent.
+function _startMicLatTracking() {
+    if (_micTrackTimer) return;
+    _micTrackTimer  = setInterval(() => {
+        if (!_locMicIsOn()) { _stopMicLatTracking(); return; }
+        // Single clock ping — after pong, _applyDynamicMicDelay() fires via _onClockPong
+        _sendClockPing();
+    }, 10000);
+    console.log('[lat] Continuous tracking started');
+}
+
+// Stop the interval. Idempotent.
+function _stopMicLatTracking() {
+    if (!_micTrackTimer) return;
+    clearInterval(_micTrackTimer);
+    _micTrackTimer  = null;
+    _micLatEWMA     = null;
+    console.log('[lat] Continuous tracking stopped');
+}
+
+// Called from _onClockPong whenever _lastRttMs is freshly updated.
+// Only acts when tracking is active and a Loc Mic channel is ON.
+// Applies an in-place delay correction if drift > 25ms, rate-limited to 30s.
+function _applyDynamicMicDelay() {
+    if (!_micTrackTimer || !_locMicIsOn()) return;
+    if (!PlayerEarphone.isActive()) return;
+
+    const earMs = Math.round(PlayerEarphone.getAudioDelaySec() * 1000);
+    const micMs = _lastRttMs > 0
+        ? Math.round(_lastRttMs / 2)
+        : (_lastMicLatResult?.micMs || 0);
+    const rawMs = earMs + micMs;
+
+    // EWMA smoothing: α=0.3 — dampens short-lived RTT spikes
+    _micLatEWMA = (_micLatEWMA === null)
+        ? rawMs
+        : Math.round(_micLatEWMA * 0.7 + rawMs * 0.3);
+
+    // Threshold: only correct if drift > 25ms
+    const currentMs = parseInt(document.getElementById('micDelaySlider')?.value) || 0;
+    if (Math.abs(_micLatEWMA - currentMs) < 25) return;
+
+    // Rate-limit: at most one adjustment per 30 seconds
+    if (Date.now() - _micTrackLastMs < 30000) return;
+    _micTrackLastMs = Date.now();
+
+    // Send with adjust=true → server calls adjustMicDelayMs (in-place, no silence)
+    fetch('/api/mic-delay', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ ms: _micLatEWMA, adjust: true }),
+    }).catch(() => {});
+    const _sl = document.getElementById('micDelaySlider');
+    const _dp = document.getElementById('micDelayDisplay');
+    if (_sl) _sl.value = _micLatEWMA;
+    if (_dp) _dp.textContent = _micLatEWMA + 'ms';
+    _lastMicLatResult = { micMs, earMs, totalMs: _micLatEWMA };
+    _updateMicDelayAutoHint();
+    console.log(`[lat] Dynamic correction: ear=${earMs}ms mic=${micMs}ms smooth=${_micLatEWMA}ms (was ${currentMs}ms)`);
+}
+
 function _updateMicDelayAutoHint() {
     const hintEl  = document.getElementById('micDelayAutoHint');
     const autoBtn = document.getElementById('micDelayAutoBtn');
@@ -2284,6 +2427,30 @@ function _updateMicDelayAutoHint() {
             if (autoBtn) { autoBtn.disabled = false; autoBtn.textContent = '⟳ Measure Now'; }
         }
     }
+}
+
+// ── Bi-directional pilot-tone latency measurement ─────────────────────────
+// Triggered when Loc Mic 1/2 ON button is pressed (chId 0 or 1).
+// Both directions are measured simultaneously using inaudible 17kHz sine tones:
+//   browser → mic worklet injects pilot → server Goertzel detects (mic latency)
+//   server  → injects pilot into outMix1 → browser AnalyserNode detects (ear latency)
+// VPS wall clock is used as single reference via _clockOffset correction.
+function startLatencyMeasure(chId) {
+    if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+    if (!PlayerEarphone.isActive()) {
+        showToast('Start earphone first to measure latency', 'warn');
+        return;
+    }
+    const sent = WA.injectMicBurst();
+    if (!sent) {
+        showToast('Mic not active — press ON first, then mic will be measured', 'warn');
+        return;
+    }
+    // t_mic_inject_vps: browser time corrected to VPS clock domain
+    const t_mic_inject_vps = Date.now() + _clockOffset;
+    send('lat:start', { chId, t_mic_inject_vps });
+    console.log(`[lat] Measurement started: chId=${chId} t_mic=${t_mic_inject_vps}`);
+    showToast('Latency measurement started — keep mic active…', 'ok', 2500);
 }
 
 // Send a LAT probe and wait for mic:pong to complete the measurement.
@@ -2363,6 +2530,7 @@ function populateSettingsFields() {
             if (display) display.textContent = cfg.micDelayMs + 'ms';
         }
         _updateMicDelayAutoHint();
+        _updateClockOffsetDisplay();
     }).catch(() => {});
 
     // Render channel rows from current console state
@@ -2496,6 +2664,47 @@ function bindSettingsEvents() {
             }
         } catch (err) {
             if (statusEl) { statusEl.textContent = `✗ Check failed: ${err.message}`; statusEl.className = 'settings-reindex-status error'; }
+        }
+    });
+
+    qs('#settingsNtpSyncBtn')?.addEventListener('click', async () => {
+        if (!S.isPrimary()) { showToast('Primary DJ only', 'warn'); return; }
+        const btn      = qs('#settingsNtpSyncBtn');
+        const statusEl = qs('#settingsNtpSyncStatus');
+        if (btn)      { btn.disabled = true; btn.textContent = '⏳ Syncing…'; }
+        if (statusEl) { statusEl.textContent = '⏳ Requesting NTP sync from VPS…'; statusEl.className = 'settings-reindex-status indexing'; statusEl.style.display = ''; }
+        try {
+            const r = await apiFetch('/api/admin/ntp-sync', { method: 'POST' });
+            const d = await r.json();
+            if (d.ok) {
+                if (statusEl) {
+                    statusEl.textContent = `✓ VPS clock synced via ${d.method} — ${d.output || 'ok'}`;
+                    statusEl.className   = 'settings-reindex-status done';
+                }
+                showToast('VPS NTP sync complete — click Check Clock Sync to verify', 'ok', 4000);
+                // Auto-refresh the clock check detail panel
+                setTimeout(() => qs('#settingsClockCheckBtn')?.click(), 800);
+            } else {
+                // Show error + the exact sudoers fix command the operator must run
+                let msg = `✗ Sync failed: ${d.error}`;
+                if (statusEl) { statusEl.textContent = msg; statusEl.className = 'settings-reindex-status error'; }
+                // Display the fix command in the detail panel so the operator can copy it
+                const detailEl = qs('#settingsClockDetail');
+                if (detailEl && d.fix) {
+                    detailEl.innerHTML =
+                        `<strong>Permission denied</strong> — VPS process user: <code>${d.processUser || '?'}</code><br><br>` +
+                        `Run <strong>once</strong> on the VPS as root to grant permission:<br>` +
+                        `<code style="user-select:all;display:block;margin-top:4px;padding:4px;background:rgba(0,0,0,.3);border-radius:4px">${d.fix}</code>` +
+                        `<br>Then click <em>Sync VPS Clock Now</em> again.`;
+                    detailEl.style.display = 'block';
+                }
+                showToast('VPS NTP sync — permission denied. See Settings for fix.', 'error', 6000);
+            }
+        } catch (err) {
+            if (statusEl) { statusEl.textContent = `✗ Request error: ${err.message}`; statusEl.className = 'settings-reindex-status error'; }
+            showToast(`NTP sync error: ${err.message}`, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '⏱ Sync VPS Clock Now'; }
         }
     });
 
@@ -3079,7 +3288,24 @@ const WA = (() => {
         return true;
     }
 
-    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, getMicLevel, injectLatencyProbe };
+    // Inject an inaudible 17kHz sine burst into the AudioWorklet mic stream.
+    // The server detects arrival via Goertzel filter — measures one-way mic latency.
+    // Burst: 2400 samples at 48kHz = 50ms — long enough for Goertzel, short enough to be inaudible.
+    function injectMicBurst() {
+        if (!_workletNode) return false;
+        try {
+            _workletNode.port.postMessage({
+                type:       'inject',
+                samples:    2400,
+                amplitude:  0.08,
+                freq:       17000,
+                sampleRate: 48000,
+            });
+            return true;
+        } catch (_) { return false; }
+    }
+
+    return { syncToConsole, startCapture, stopCapture, getCtx, ensureCtx, getMicStream, getMicLevel, injectLatencyProbe, injectMicBurst };
 })();
 
 
@@ -3407,6 +3633,13 @@ const PlayerEarphone = (() => {
     let _sideGain   = null;     // GainNode controlling sidetone level
     let _sidetoneOn = false;    // true when sidetone is connected
 
+    // ── Pilot tone detection — for latency measurement ──────────────────────
+    // High-resolution AnalyserNode (fftSize=4096) tapped from _gain output.
+    // Detects the 17kHz pilot that the server injects into outMix1.
+    let _pilotAnalyser  = null;
+    let _earPilotSearch = null;  // { probeId, t_ear_inject_vps, onDetected } | null
+    let _pilotRafId     = null;
+
     function _ensureCtx() {
         if (_ctx) return;
         _ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
@@ -3416,6 +3649,11 @@ const PlayerEarphone = (() => {
         _analyser.fftSize = 256;
         _gain.connect(_analyser);
         _analyser.connect(_ctx.destination);
+        // Parallel high-res AnalyserNode for pilot tone detection (doesn't add latency)
+        _pilotAnalyser = _ctx.createAnalyser();
+        _pilotAnalyser.fftSize = 4096;
+        _pilotAnalyser.smoothingTimeConstant = 0;  // instant response
+        _gain.connect(_pilotAnalyser);
     }
 
     function _queuedSecs() {
@@ -3650,9 +3888,50 @@ const PlayerEarphone = (() => {
 
     function isSidetoneOn() { return _sidetoneOn; }
 
+    // ── 17kHz pilot detection for ear latency measurement ────────────────────
+    // Called by startLatencyMeasure() when server sends lat:probe.
+    // Polls _pilotAnalyser every rAF (~16ms) for a 17kHz bin spike.
+    // onDetected(probeId, earMs) called once when detected.
+    function startEarPilotDetect(probeId, t_ear_inject_vps, onDetected) {
+        if (_earPilotSearch) {
+            // Cancel previous search if still running
+            cancelAnimationFrame(_pilotRafId);
+            _pilotRafId     = null;
+            _earPilotSearch = null;
+        }
+        _earPilotSearch = { probeId, t_ear_inject_vps, onDetected };
+        _pollPilot();
+    }
+
+    function _pollPilot() {
+        if (!_earPilotSearch || !_pilotAnalyser || !_active) {
+            _earPilotSearch = null;
+            return;
+        }
+        const freqBuf = new Float32Array(_pilotAnalyser.frequencyBinCount);
+        _pilotAnalyser.getFloatFrequencyData(freqBuf);
+        // Bin for 17kHz at SR=44100, fftSize=4096:
+        //   bin = round(17000 × 4096 / 44100) = round(1578.9) = 1579
+        const bin       = Math.round(17000 * _pilotAnalyser.fftSize / SR);
+        const threshold = -40;  // dBFS — pilot at 0.08 amplitude is ~-24 dBFS
+        if (freqBuf[bin] > threshold) {
+            const t_now_vps = Date.now() + _clockOffset;
+            const earMs     = Math.max(0, Math.round(t_now_vps - _earPilotSearch.t_ear_inject_vps));
+            const { probeId, onDetected } = _earPilotSearch;
+            cancelAnimationFrame(_pilotRafId);
+            _pilotRafId     = null;
+            _earPilotSearch = null;
+            console.log(`[PE] Ear pilot detected: bin=${bin} dBFS=${freqBuf[bin].toFixed(1)} earMs=${earMs}`);
+            onDetected(probeId, earMs);
+            return;
+        }
+        _pilotRafId = requestAnimationFrame(_pollPilot);
+    }
+
     return { start, stop, setVolume, getVolume, isActive, flush, resumeCtx,
              getLevel, getAudioDelaySec, syncConsole,
-             enableSidetone, disableSidetone, setSidetoneGain, isSidetoneOn };
+             enableSidetone, disableSidetone, setSidetoneGain, isSidetoneOn,
+             startEarPilotDetect };
 })();
 
 // ── Browser Monitor — server PGM mix via WebSocket WebM/Opus ─────────────────

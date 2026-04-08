@@ -25,4 +25,4 @@ jobs:
         run: npm install --production
 
       - name: Check syntax
-        run: node --check server.js && node --check app.js && node --check mixer.js && node --check player.js && node --check playlist.js && node --check library.js && node --check library-worker.js
+        run: node --check server.js && node --check app.js && node --check mixer.js && node --check player.js && node --check playlist.js && node --check library.js && node --check library-worker.js && node --check mic-capture-worklet.js

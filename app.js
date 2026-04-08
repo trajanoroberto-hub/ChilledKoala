@@ -3554,9 +3554,20 @@ function fmtTime(iso) {
     } catch (_) { return '–'; }
 }
 
-async function apiFetch(url, method = 'GET', body) {
+async function apiFetch(url, methodOrOpts = 'GET', body) {
+    // Accepts both calling conventions:
+    //   apiFetch(url, 'POST', bodyObj)          — positional (original)
+    //   apiFetch(url, { method, body, ... })    — options object (newer callers)
+    let method, reqBody;
+    if (typeof methodOrOpts === 'object' && methodOrOpts !== null) {
+        method  = methodOrOpts.method || 'GET';
+        reqBody = methodOrOpts.body;                    // already stringified by caller
+    } else {
+        method  = methodOrOpts;
+        reqBody = body ? JSON.stringify(body) : undefined;
+    }
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
-    if (body) opts.body = JSON.stringify(body);
+    if (reqBody) opts.body = reqBody;
     const resp = await fetch(url, opts);
     if (resp.status === 401) location.href = '/login';
     return resp;

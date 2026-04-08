@@ -42,7 +42,7 @@ jobs:
     steps:
       - name: Trigger deploy webhook
         run: |
-          curl -s -X POST http://${{ secrets.VPS_HOST }}/api/deploy \
+          curl -s -X POST http://${{ secrets.VPS_HOST }}:3100/api/deploy \
             -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
             -H "Content-Type: application/json" \
             --fail --max-time 30

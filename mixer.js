@@ -137,6 +137,15 @@ class AudioMixer extends EventEmitter {
 
         if (micAssignments) {
             micAssignments.forEach(({ key, gain }) => {
+                // Flush stale PCM when a mic channel turns ON after being OFF.
+                // While OFF, the browser keeps sending audio which accumulates in
+                // the buffer. Without flushing, the first ~1s on-air would be
+                // stale audio from before the DJ pressed ON.
+                const wasOff = !(this._gains[key] > 0);
+                if (gain > 0 && wasOff && this._bufs[key]?.length > 0) {
+                    console.log(`[mixer] ${key} ON — flushed ${this._bufs[key].length}B stale buffer`);
+                    this._bufs[key] = Buffer.alloc(0);
+                }
                 this._gains[key] = gain;
             });
         }
@@ -493,7 +502,7 @@ class AudioMixer extends EventEmitter {
 
         // Periodic diagnostic: log gains + buffer sizes + mix1 clients every 5 seconds
         this._diagCount = (this._diagCount || 0) + 1;
-        if (this._diagCount >= 250) {
+        if (this._diagCount >= 15000) {  // every 5 minutes (15000 × 20ms)
             this._diagCount = 0;
             const g = this._gains;
             const b = this._bufs;

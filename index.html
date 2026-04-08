@@ -435,10 +435,9 @@
         <div id="settingsNtpSyncStatus" class="settings-reindex-status" style="display:none;margin-top:4px"></div>
         <div id="settingsClockDetail" class="settings-hint" style="display:none;margin-top:6px;font-family:monospace;font-size:11px;line-height:1.7"></div>
         <div class="settings-hint" style="margin-top:8px">
-          <strong>PC clock:</strong> run the following in an Administrator PowerShell to sync to the same NTP source as the VPS:<br>
-          <code>w32tm /resync /force</code>
-          &nbsp;—&nbsp; if that fails: &nbsp;
-          <code>Restart-Service w32tm ; w32tm /resync /force</code>
+          <strong>PC clock:</strong> run in an Administrator PowerShell to sync to the same NTP source as the VPS:<br>
+          Step 1: <code>w32tm /resync /force</code><br>
+          If that fails, Step 2: <code>Restart-Service w32tm</code> then re-run Step 1.
         </div>
       </div>
 

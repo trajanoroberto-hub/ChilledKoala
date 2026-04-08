@@ -446,10 +446,8 @@
       <div class="settings-section">
         <div class="settings-hdr">🎙 DJ Mic Delay Compensation (Loc Mic 1 &amp; 2)</div>
         <div class="settings-hint" style="margin-bottom:10px">
-          The DJ hears PGM1 through earphones with a delay of <strong>network latency + 700ms jitter buffer</strong>.
-          They speak to what they hear, so their voice arrives at the server early relative to the music.<br>
-          Setting this delay aligns DJ voice with music in the Icecast broadcast output.<br>
-          <strong>Auto-Detect</strong> calculates the value from the measured network RTT. Click Apply to save.
+          Start with <strong>Auto-Detect</strong>, then fine-tune: <strong>increase</strong> if voice sounds early in the broadcast, <strong>decrease</strong> if late.<br>
+          <strong>0ms</strong> = compensation off. Value is saved to config.ini and restored on restart.
         </div>
         <div class="settings-row" style="align-items:center;gap:12px">
           <label class="settings-lbl">Delay</label>

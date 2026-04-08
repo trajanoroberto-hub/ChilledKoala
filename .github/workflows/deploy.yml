@@ -1,4 +1,4 @@
-name: CI
+name: CI / Deploy
 
 on:
   push:
@@ -25,4 +25,50 @@ jobs:
         run: npm install --production
 
       - name: Check syntax
-        run: node --check server.js && node --check app.js && node --check mixer.js && node --check player.js && node --check playlist.js && node --check library.js && node --check library-worker.js && node --check mic-capture-worklet.js
+        run: |
+          node --check server.js
+          node --check app.js
+          node --check mixer.js
+          node --check player.js
+          node --check playlist.js
+          node --check library.js
+          node --check library-worker.js
+          node --check mic-capture-worklet.js
+
+  deploy:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+
+            cd /opt/chilled_koala
+
+            echo "==> Pulling latest code..."
+            git pull origin main
+
+            echo "==> Installing dependencies..."
+            npm install --production
+
+            echo "==> Installing systemd service..."
+            cp chilled-koala.service /etc/systemd/system/chilled-koala.service
+            systemctl daemon-reload
+            systemctl enable chilled-koala
+
+            echo "==> Restarting service..."
+            # Kill any bare node process that pre-dates the systemd service
+            pkill -f 'node /opt/chilled_koala/server.js' || true
+            sleep 1
+            systemctl restart chilled-koala
+            sleep 2
+
+            echo "==> Status:"
+            systemctl status chilled-koala --no-pager

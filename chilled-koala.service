@@ -1,0 +1,18 @@
+[Unit]
+Description=Chilled Koala — Stream Ecosystem for AzuraCast
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/chilled_koala
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chilled-koala
+
+[Install]
+WantedBy=multi-user.target

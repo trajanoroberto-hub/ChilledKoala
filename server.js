@@ -126,7 +126,7 @@ app.use(sessionMiddleware);
 
 // ── Auth guard ────────────────────────────────────────────────────────────────
 
-const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/health', '/favicon.ico', '/style.css', '/app.js', '/call.html', '/mediasoup-client.js', '/pcm-player.js', '/earphone-worklet.js', '/mic-capture-worklet.js']);
+const PUBLIC_PATHS = new Set(['/login', '/api/auth/login', '/api/health', '/api/deploy', '/favicon.ico', '/style.css', '/app.js', '/call.html', '/mediasoup-client.js', '/pcm-player.js', '/earphone-worklet.js', '/mic-capture-worklet.js']);
 
 app.use((req, res, next) => {
     const p = req.path;

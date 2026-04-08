@@ -2016,6 +2016,30 @@ app.post('/api/admin/ntp-sync', primaryOnly, (req, res) => {
     });
 });
 
+// POST /api/deploy — GitHub Actions webhook: pull latest code and restart.
+// Called by CI after lint passes. No session auth — protected by a shared
+// secret stored in config.ini [deploy] secret and GitHub secret DEPLOY_SECRET.
+// The deploy script is spawned detached so it survives when systemctl kills
+// this process during the restart step.
+app.post('/api/deploy', (req, res) => {
+    const secret = (config?.deploy?.secret || '').trim();
+    if (!secret) {
+        console.warn('[deploy] Webhook received but [deploy] secret not set in config.ini — ignoring');
+        return res.status(503).json({ error: 'Deploy webhook not configured on server' });
+    }
+    const incoming = (req.headers['x-deploy-secret'] || '').trim();
+    if (!incoming || incoming !== secret) {
+        console.warn('[deploy] Webhook rejected — wrong or missing X-Deploy-Secret header');
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    console.log('[deploy] Webhook accepted — launching deploy.sh detached');
+    res.json({ ok: true, message: 'Deploy started — check /var/log/chilled-koala-deploy.log on VPS' });
+    const proc = require('child_process').spawn('/bin/bash', [
+        require('path').join(__dirname, 'deploy.sh')
+    ], { detached: true, stdio: 'ignore' });
+    proc.unref();
+});
+
 // Clock sync endpoint — returns server time and NTP synchronisation status.
 // Browser uses this to check whether VPS and PC are both NTP-synchronised.
 // If both use NTP, their Date.now() values are within ~50ms of each other,

@@ -72,7 +72,7 @@ html, body {
   padding: 3px 7px; border-radius: 8px; letter-spacing: .3px;
   display: inline-flex; flex-direction: column; align-items: center; line-height: 1.4;
 }
-.logo-build { font-size: 10px; opacity: 0.7; letter-spacing: .2px; }
+.logo-build { font-size: 12px; opacity: 0.7; letter-spacing: .2px; }
 .logo-sub-wrap { display: flex; flex-direction: column; gap: 0px; }
 .logo-sub  { font-size: 14px; color: var(--text2); letter-spacing: 0; font-weight: 500; }
 .logo-copy { font-size: 12px; color: var(--text2); letter-spacing: 0; font-weight: 500; }

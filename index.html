@@ -437,7 +437,7 @@
         <div class="settings-hint" style="margin-top:8px">
           <strong>PC clock:</strong> run in an Administrator PowerShell to sync to the same NTP source as the VPS:<br>
           Step 1: <code>w32tm /resync /force</code><br>
-          If that fails, Step 2: <code>Restart-Service w32tm</code> then re-run Step 1.
+          If that fails: <code>w32tm /register</code> → <code>Start-Service W32Time</code> → re-run Step 1.
         </div>
       </div>
 
